@@ -1,0 +1,20 @@
+# DeepSeek Harness - Personal Toolkit Plugin
+#
+# Neutral defaults only: the user's profile patch layer wins per row, and the
+# browser half reads the resolved section live through its settings scope.
+# An empty chatWorkspacePath resolves to <DSH_HOME>/chat at load time; the
+# title is the display name of the default no-project chat workspace.
+- insert:
+    - id: toolkit
+      name: 'dsh-plugin-toolkit'
+      inject:
+        - settings
+      config:
+        optimizations:
+          workspacelessChat: true
+          editLastMessage: true
+          viewActivity: true
+          slashI18n: true
+          changeReport: true
+        chatWorkspacePath: ''
+        chatWorkspaceTitle: '通用对话'

@@ -1,0 +1,55 @@
+{
+  "name": "dsh-plugin-toolkit",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness personal toolkit: small runtime-toggleable quality-of-life optimizations, each shipped as one card in the Toolkit settings page. Optimizations: workspaceless chat, edit-and-resend last message, activity grouping in the sidebar, Chinese slash-menu descriptions, and a per-turn change report.",
+  "type": "module",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings-plugins",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-primitives"
+      ],
+      "platform": "web"
+    }
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis",
+    "toolkit",
+    "quality-of-life",
+    "workspaceless",
+    "settings"
+  ],
+  "author": "kola",
+  "license": "MIT",
+  "files": [
+    "index.js",
+    "client.js",
+    "index.d.ts",
+    "cordis.patch.yml",
+    "README.md",
+    "README_CN.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4.0.0",
+    "@deepseek-ai/schemastery": ">=3.0.0",
+    "@deepseek-ai/dsh-settings": "*"
+  }
+}
