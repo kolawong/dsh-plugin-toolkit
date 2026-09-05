@@ -45,7 +45,7 @@
 |---|---|---|
 | `optimizations.viewActivity` | `true` | 工作区侧栏「活动」图标 + 侧栏就地重排（运行中优先、按天分组）。 |
 
-> 本项需要 dsh host 扩展：`ui-workspace` 新增 `sidebar.workspaces.actions` 槽位（工作区头部动作区）与 `groupBy: 'activity'` 分组模式（`deriveActivity`），只有 host 支持时图标才会出现。host 不支持时该配置项仍可在设置卡片里开关，只是不渲染图标。
+> 本项为 100% 纯外挂无侵入实现：直接在侧边栏头部动作区挂载活动图标，切换时动态替换会话列表，零侵入 DSH 官方核心代码，官方一键升级毫无冲突。
 
 ### `slashI18n`（默认开启）
 

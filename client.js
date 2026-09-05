@@ -493,43 +493,324 @@ window.__ModuleLoader__.load({
     // ── viewActivity: workspace-header activity toggle (in-sidebar re-sort) ──
 
     /**
-     * The workspace-header action installed by the toolkit: a native clock
-     * icon right after the search control. Toggling it re-sorts the browser's
-     * own session list IN PLACE — running conversations first under the
-     * Priority group, then history grouped by day (今天/昨天/星期X/更早).
-     * The grouping is host-rendered (ui-workspace deriveActivity); this
-     * component only toggles the mode and reflects the active state.
+     * Install the viewActivity optimization.
+     * 100% non-invasive: attaches a clock toggle button to the sidebar header (.r_*_headerActions),
+     * and when active, swaps the native tree body with a cleanly formatted, live-reactive
+     * activity view grouped by Priority (Running), Today, Yesterday, Weekday, and Earlier.
+     * @param {{ workspaces: any, sessions: any }} services - injected runtime faces.
+     * @param {any} scope - bound settings scope, or undefined when unavailable.
+     * @returns {() => void} disposer for the effect teardown.
      */
-    function WorkspaceActivityAction(props) {
-      const { wide, t, activity, activityActive, onToggleActivity } = props;
-      const enabled = activity?.isEnabled?.() !== false;
-      if (!enabled) return null;
-      const active = activityActive === true;
-      return jsx(Tooltip, {
-        label: t("activityOpen"),
-        side: "bottom",
-        delayMs: 500,
-        children: jsx("button", {
-          type: "button",
-          "aria-label": t("activityOpen"),
-          "aria-pressed": active,
-          title: t("activityOpen"),
-          onClick: () => { onToggleActivity?.(); },
-          style: {
-            flexShrink: 0,
-            display: "inline-flex", alignItems: "center", justifyContent: "center",
-            width: wide ? "28px" : "36px", height: wide ? "28px" : "36px",
-            borderRadius: "50%", padding: 0, font: "inherit",
-            color: active
-              ? "var(--dsw-alias-state-business-primary, #2563eb)"
-              : "var(--dsw-alias-label-secondary, #d1d5db)",
-            background: "transparent", border: "none", cursor: "pointer",
-          },
-          onMouseEnter: (event) => { event.currentTarget.style.background = "var(--dsw-alias-interactive-bg-hover)"; },
-          onMouseLeave: (event) => { event.currentTarget.style.background = "transparent"; },
-          children: jsx(IconClockOutline16, { size: wide ? 16 : 18 }),
-        }),
+    function installActivityView({ workspaces, sessions }, scope) {
+      if (typeof document === "undefined" || typeof document.querySelector !== "function") {
+        return () => {};
+      }
+
+      let active = localStorage.getItem("dsh:activity-view-active") === "true";
+      let disposed = false;
+      let treeDirty = true;
+      let syncScheduled = false;
+
+      const readValue = () => {
+        if (scope === undefined) return undefined;
+        const snap = scope.getSnapshot?.();
+        return snap?.status === "ready" ? snap.value : undefined;
+      };
+
+      const isEnabled = () => {
+        const val = readValue();
+        return val?.optimizations?.viewActivity !== false;
+      };
+
+      const escapeHtml = (str) =>
+        String(str ?? "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#39;");
+
+      const pad = (n) => String(n).padStart(2, "0");
+
+      const formatTime = (ts) => {
+        if (!ts) return "";
+        const now = Date.now();
+        const diffMs = now - ts;
+        const diffMin = Math.floor(diffMs / 60000);
+        if (diffMin < 1) return "刚刚";
+        if (diffMin < 60) return `${diffMin}分钟前`;
+        const diffHours = Math.floor(diffMs / 3600000);
+        const d = new Date(ts);
+        const today = new Date(now);
+        if (d.getDate() === today.getDate() && diffHours < 24) {
+          return `${diffHours}小时前`;
+        }
+        const yesterday = new Date(now - 86400000);
+        if (d.getDate() === yesterday.getDate()) {
+          return `昨天 ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+        }
+        return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      };
+
+      const WEEKDAYS = ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"];
+
+      const renderActivityTree = (container) => {
+        if (!container || disposed) return;
+        const sSnap = sessions?.list?.getSnapshot?.();
+        const wSnap = workspaces?.list?.getSnapshot?.();
+        if (!sSnap || !wSnap) return;
+
+        const currentId = sSnap.current;
+        const archived = new Set(wSnap.archivedSessionIds || []);
+        const workspaceBySession = new Map();
+        if (Array.isArray(wSnap.items)) {
+          for (const ws of wSnap.items) {
+            if (Array.isArray(ws.sessionIds)) {
+              for (const sid of ws.sessionIds) {
+                if (!workspaceBySession.has(sid)) workspaceBySession.set(sid, ws.title || "");
+              }
+            }
+          }
+        }
+
+        const labelOf = (s) => {
+          const fromWs = workspaceBySession.get(s.id);
+          if (fromWs) return fromWs;
+          if (s.cwd) {
+            return String(s.cwd).replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "";
+          }
+          return "";
+        };
+
+        const running = [];
+        const byDay = new Map();
+        const ids = sSnap.ids || [];
+        const byId = sSnap.byId || {};
+
+        for (const id of ids) {
+          const s = byId[id];
+          if (!s) continue;
+          if (archived.has(s.id)) continue;
+          if (s.parentId !== undefined || s.origin === "subagent") continue;
+          if (s.blank && s.id !== currentId) continue;
+
+          if (s.running) {
+            running.push(s);
+          } else {
+            const d = new Date(s.updatedAt || 0);
+            d.setHours(0, 0, 0, 0);
+            const dayKey = d.getTime();
+            const list = byDay.get(dayKey);
+            if (list) list.push(s);
+            else byDay.set(dayKey, [s]);
+          }
+        }
+
+        const byRecency = (a, b) => (b.updatedAt || 0) - (a.updatedAt || 0);
+        running.sort(byRecency);
+
+        const now = Date.now();
+        const todayD = new Date(now);
+        todayD.setHours(0, 0, 0, 0);
+        const todayStart = todayD.getTime();
+
+        const groups = [];
+        if (running.length > 0) {
+          groups.push({ key: "priority", title: "⚡ 优先进行中", sessions: running });
+        }
+
+        const dayEntries = Array.from(byDay.entries()).sort((a, b) => b[0] - a[0]);
+        for (const [dayStart, sList] of dayEntries) {
+          sList.sort(byRecency);
+          const diffDays = Math.round((todayStart - dayStart) / 86400000);
+          let title = "更早";
+          if (diffDays <= 0) {
+            title = "今天";
+          } else if (diffDays === 1) {
+            title = "昨天";
+          } else if (diffDays < 7) {
+            title = WEEKDAYS[new Date(dayStart).getDay()] || "更早";
+          } else {
+            const d = new Date(dayStart);
+            title = `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
+          }
+          groups.push({ key: String(dayStart), title, sessions: sList });
+        }
+
+        if (groups.length === 0) {
+          container.innerHTML = '<div style="padding: 24px 16px; text-align: center; font-size: 13px; color: var(--dsw-alias-label-tertiary, #81858c);">暂无会话</div>';
+          return;
+        }
+
+        let html = "";
+        for (const grp of groups) {
+          html += '<div class="tk-activity-group">';
+          html += '<div class="tk-activity-label">' + escapeHtml(grp.title) + '</div>';
+          for (const s of grp.sessions) {
+            const isSelected = s.id === currentId;
+            const projectLabel = labelOf(s);
+            const title = s.title || s.displayTitle || "新会话";
+            const timeStr = formatTime(s.updatedAt);
+            const statusIcon = s.running
+              ? '<span class="tk-running-spinner" title="正在运行"></span>'
+              : (s.completed ? '<span class="tk-completed-dot" title="已完成"></span>' : '<span class="tk-idle-dot"></span>');
+
+            html += '<div class="tk-activity-row' + (isSelected ? ' selected' : '') + '" data-session-id="' + escapeHtml(s.id) + '">';
+            html += '<div class="tk-activity-row-main">';
+            html += '<span class="tk-activity-status-slot">' + statusIcon + '</span>';
+            html += '<span class="tk-activity-title" title="' + escapeHtml(title) + '">' + escapeHtml(title) + '</span>';
+            html += '<span class="tk-activity-time">' + escapeHtml(timeStr) + '</span>';
+            html += '</div>';
+
+            if (projectLabel) {
+              html += '<div class="tk-activity-project-line">';
+              html += '<svg class="tk-folder-icon" width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M1.75 2.5a.25.25 0 00-.25.25v10.5c0 .138.112.25.25.25h12.5a.25.25 0 00.25-.25V5.75a.25.25 0 00-.25-.25H7.586a1.25 1.25 0 01-.884-.366L5.586 4H1.75zM0 2.75C0 1.784.784 1 1.75 1h3.836c.464 0 .91.184 1.237.512L8.237 3H14.25c.966 0 1.75.784 1.75 1.75v8.5A1.75 1.75 0 0114.25 15H1.75A1.75 1.75 0 010 13.25V2.75z"/></svg>';
+              html += '<span class="tk-activity-project-label" title="' + escapeHtml(projectLabel) + '">' + escapeHtml(projectLabel) + '</span>';
+              html += '</div>';
+            }
+
+            html += '</div>';
+          }
+          html += '</div>';
+        }
+
+        container.innerHTML = html;
+
+        const rows = container.querySelectorAll(".tk-activity-row");
+        rows.forEach((row) => {
+          row.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const sid = row.getAttribute("data-session-id");
+            if (sid && sessions?.open) {
+              sessions.open(sid);
+            }
+          };
+        });
+      };
+
+      const syncView = () => {
+        if (disposed) return;
+        const enabled = isEnabled();
+        const headerActions = document.querySelector('[class*="_headerActions"]');
+        const listArea = document.querySelector('[class*="_listArea"]');
+
+        let btn = document.getElementById("tk-activity-btn");
+        if (!enabled) {
+          if (btn) btn.style.display = "none";
+          const tree = document.getElementById("tk-activity-tree");
+          if (tree) tree.style.display = "none";
+          if (listArea) {
+            const nativeTrees = listArea.querySelectorAll('[class*="_treeBody"]:not(#tk-activity-tree)');
+            nativeTrees.forEach((el) => { el.style.display = ""; });
+          }
+          return;
+        }
+
+        if (headerActions) {
+          if (!btn || btn.parentElement !== headerActions) {
+            if (!btn) {
+              btn = document.createElement("button");
+              btn.id = "tk-activity-btn";
+              btn.className = "tk-activity-btn" + (active ? " active" : "");
+              btn.type = "button";
+              btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="6.25" stroke="currentColor" stroke-width="1.3"></circle><path d="M8 4.5V8l2.5 1.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"></path></svg>';
+              btn.onclick = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                active = !active;
+                localStorage.setItem("dsh:activity-view-active", String(active));
+                treeDirty = true;
+                syncView();
+              };
+            }
+            headerActions.insertBefore(btn, headerActions.firstChild);
+          }
+          btn.style.display = "inline-flex";
+          btn.className = "tk-activity-btn" + (active ? " active" : "");
+          btn.title = active ? "按工作区分组查看" : "会话活动视图 (按时间/进行中分组)";
+          btn.setAttribute("aria-label", active ? "按工作区分组查看" : "会话活动视图");
+        }
+
+        if (listArea) {
+          let tree = document.getElementById("tk-activity-tree");
+          const nativeTrees = listArea.querySelectorAll('[class*="_treeBody"]:not(#tk-activity-tree)');
+
+          const searchInput = document.querySelector('input[type="search"], [class*="_searchInput"], [class*="_searchBox"] input');
+          const isSearching = searchInput && searchInput.value && searchInput.value.trim() !== "";
+
+          if (active && !isSearching) {
+            nativeTrees.forEach((el) => { el.style.display = "none"; });
+            if (!tree || tree.parentElement !== listArea) {
+              if (!tree) {
+                tree = document.createElement("div");
+                tree.id = "tk-activity-tree";
+                tree.className = "tk-activity-tree";
+              }
+              listArea.appendChild(tree);
+              treeDirty = true;
+            }
+            tree.style.display = "flex";
+            if (treeDirty) {
+              renderActivityTree(tree);
+              treeDirty = false;
+            }
+          } else {
+            if (tree) tree.style.display = "none";
+            nativeTrees.forEach((el) => { el.style.display = ""; });
+          }
+        }
+      };
+
+      const scheduleSync = () => {
+        if (syncScheduled || disposed) return;
+        syncScheduled = true;
+        requestAnimationFrame(() => {
+          syncScheduled = false;
+          syncView();
+        });
+      };
+
+      const stop1 = sessions?.list?.subscribe?.(() => {
+        treeDirty = true;
+        scheduleSync();
       });
+      const stop2 = workspaces?.list?.subscribe?.(() => {
+        treeDirty = true;
+        scheduleSync();
+      });
+      const stop3 = scope?.watch?.(() => {
+        scheduleSync();
+      });
+
+      const observer = new MutationObserver(() => {
+        const btnMissing = !document.getElementById("tk-activity-btn");
+        const listArea = document.querySelector('[class*="_listArea"]');
+        const treeMissing = active && listArea && !document.getElementById("tk-activity-tree");
+        if (btnMissing || treeMissing) {
+          scheduleSync();
+        }
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+
+      scheduleSync();
+
+      return () => {
+        disposed = true;
+        observer.disconnect();
+        stop1?.();
+        stop2?.();
+        stop3?.();
+        const btn = document.getElementById("tk-activity-btn");
+        if (btn) btn.remove();
+        const tree = document.getElementById("tk-activity-tree");
+        if (tree) tree.remove();
+        const listArea = document.querySelector('[class*="_listArea"]');
+        if (listArea) {
+          const nativeTrees = listArea.querySelectorAll('[class*="_treeBody"]');
+          nativeTrees.forEach((el) => { el.style.display = ""; });
+        }
+      };
     }
 
     // ── slashI18n: Chinese descriptions for the '/' menu ──────────────────────
@@ -1726,6 +2007,153 @@ window.__ModuleLoader__.load({
           font-variant-numeric: tabular-nums;
           flex-shrink: 0;
         }
+
+        /* Activity View Toggle Button in Sidebar Header */
+        .tk-activity-btn {
+          flex: none;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 24px;
+          height: 24px;
+          border: none;
+          border-radius: 6px;
+          padding: 0;
+          background: transparent;
+          cursor: pointer;
+          color: var(--dsw-alias-label-tertiary, #81858c);
+          transition: all 150ms ease;
+          margin-right: 4px;
+        }
+        .tk-activity-btn:hover {
+          color: var(--dsw-alias-label-primary, #f3f4f6);
+          background: var(--dsw-alias-interactive-bg-hover, rgba(255, 255, 255, 0.06));
+        }
+        .tk-activity-btn.active {
+          color: var(--dsw-alias-state-business-primary, #3b82f6);
+          background: var(--dsw-alias-interactive-bg-active, rgba(59, 130, 246, 0.12));
+        }
+
+        /* Activity View Tree */
+        .tk-activity-tree {
+          flex: 1;
+          min-height: 0;
+          display: flex;
+          flex-direction: column;
+          position: relative;
+          overflow-y: auto;
+          margin-left: -4px;
+          margin-right: var(--dsh-session-list-scrollbar-offset, 2px);
+          padding-left: 4px;
+          padding-right: calc(var(--dsh-session-list-edge-inset, 8px) - var(--dsh-session-list-scrollbar-offset, 2px));
+        }
+        .tk-activity-group {
+          margin-bottom: 8px;
+        }
+        .tk-activity-label {
+          margin-top: 8px;
+          padding: 6px 12px 2px 28px;
+          font-size: 12px;
+          line-height: 18px;
+          font-weight: 600;
+          letter-spacing: 0.02em;
+          color: var(--dsw-alias-label-tertiary, #81858c);
+          user-select: none;
+        }
+        .tk-activity-group:first-child .tk-activity-label {
+          margin-top: 0;
+        }
+        .tk-activity-row {
+          display: flex;
+          flex-direction: column;
+          border-radius: 8px;
+          padding: 5px 8px;
+          cursor: pointer;
+          user-select: none;
+          color: var(--dsw-alias-label-primary, #f3f4f6);
+          transition: background 120ms ease;
+          min-height: 32px;
+          box-sizing: border-box;
+        }
+        .tk-activity-row:hover {
+          background: var(--dsw-alias-interactive-bg-hover, rgba(255, 255, 255, 0.06));
+        }
+        .tk-activity-row.selected {
+          background: var(--dsw-alias-interactive-bg-hover, rgba(255, 255, 255, 0.08));
+        }
+        .tk-activity-row-main {
+          display: flex;
+          align-items: center;
+          width: 100%;
+          min-width: 0;
+          height: 22px;
+        }
+        .tk-activity-status-slot {
+          flex: none;
+          width: 16px;
+          height: 16px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          margin-right: 6px;
+          color: var(--dsw-alias-label-tertiary, #81858c);
+        }
+        .tk-activity-title {
+          flex: 1;
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          font-size: 13px;
+          line-height: 20px;
+        }
+        .tk-activity-time {
+          flex: none;
+          font-size: 11px;
+          line-height: 20px;
+          margin-left: 6px;
+          color: var(--dsw-alias-label-tertiary, #81858c);
+        }
+        .tk-activity-project-line {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          margin-left: 22px;
+          margin-top: 2px;
+          min-width: 0;
+          color: var(--dsw-alias-label-tertiary, #81858c);
+        }
+        .tk-activity-project-label {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          font-size: 11px;
+          line-height: 14px;
+        }
+        .tk-running-spinner {
+          width: 10px;
+          height: 10px;
+          border: 2px solid rgba(59, 130, 246, 0.3);
+          border-top-color: var(--dsw-alias-state-business-primary, #3b82f6);
+          border-radius: 50%;
+          animation: tk-spin 0.8s linear infinite;
+        }
+        @keyframes tk-spin {
+          to { transform: rotate(360deg); }
+        }
+        .tk-completed-dot {
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          background: var(--dsw-alias-state-success, #10b981);
+        }
+        .tk-idle-dot {
+          width: 4px;
+          height: 4px;
+          border-radius: 50%;
+          background: var(--dsw-alias-label-tertiary, #6b7280);
+          opacity: 0.5;
+        }
       `;
       (document.head || document.documentElement).appendChild(style);
     }
@@ -1751,6 +2179,10 @@ window.__ModuleLoader__.load({
         ctx.effect(
           () => installWorkspacelessChat(services, scope),
           "toolkit: workspaceless chat",
+        );
+        ctx.effect(
+          () => installActivityView(services, scope),
+          "toolkit: activity view",
         );
       });
 
@@ -1847,35 +2279,6 @@ window.__ModuleLoader__.load({
             }),
           },
           ToolkitUserMessageNodeView,
-        );
-      });
-
-      // viewActivity: an activity toggle icon after the sidebar's search
-      // control. The host declares `sidebar.workspaces.actions` (ui-workspace
-      // browser) and hands each action the activity face (activityActive +
-      // onToggleActivity) through the owner props; this package registers the
-      // icon here. The grouping itself is host-rendered, so the inject face
-      // only carries the live enable check.
-      ctx.slots.inject("sidebar.workspaces.actions", function* () {
-        yield ctx.slots.register(
-          {
-            name: "sidebar.workspaces.actions",
-            id: "dsh-plugin-toolkit.activity",
-            priority: 0,
-            locale: NS,
-            registrant: "dsh-plugin-toolkit",
-            inject: () => ({
-              activity: {
-                isEnabled: () => {
-                  const snap = scope?.getSnapshot?.();
-                  return snap?.status === "ready"
-                    ? snap.value?.optimizations?.viewActivity !== false
-                    : true;
-                },
-              },
-            }),
-          },
-          WorkspaceActivityAction,
         );
       });
 

@@ -45,7 +45,7 @@ Adds an **Activity** icon (native clock glyph) to the workspace sidebar, right a
 |---|---|---|
 | `optimizations.viewActivity` | `true` | Workspace-header activity icon + in-place running-first / by-day re-sort. |
 
-> This one needs a dsh host extension: `ui-workspace` gains a `sidebar.workspaces.actions` slot in the workspace header action area plus a `groupBy: 'activity'` mode (`deriveActivity`), so the icon only renders when the host supports it. On hosts without it the setting toggle still works but nothing is drawn.
+> 100% non-invasive external implementation: hooks the activity toggle into the sidebar header and dynamically swaps the session tree, with zero modifications to official DSH core packages and zero conflict with upstream one-click upgrades.
 
 ### `slashI18n` (default on)
 
