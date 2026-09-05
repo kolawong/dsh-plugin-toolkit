@@ -616,7 +616,12 @@ window.__ModuleLoader__.load({
 
         const groups = [];
         if (running.length > 0) {
-          groups.push({ key: "priority", title: "⚡ 优先进行中", sessions: running });
+          groups.push({
+            key: "priority",
+            title: "进行中",
+            icon: '<svg class="tk-label-spin" width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M2.871 13.1286C0.0387669 10.2962 0.0387669 5.70383 2.871 2.87141C5.70341 0.0390029 10.2957 0.0391154 13.1282 2.87141L12.1387 3.86094C9.85292 1.57538 6.1469 1.57596 3.86123 3.86163C1.57573 6.14732 1.57573 9.85269 3.86123 12.1384C6.1469 14.424 9.85292 14.4246 12.1387 12.1391L13.1282 13.1286C10.2957 15.9609 5.70341 15.961 2.871 13.1286Z"/></svg>',
+            sessions: running,
+          });
         }
 
         const dayEntries = Array.from(byDay.entries()).sort((a, b) => b[0] - a[0]);
@@ -645,7 +650,11 @@ window.__ModuleLoader__.load({
         let html = "";
         for (const grp of groups) {
           html += '<div class="tk-activity-group">';
-          html += '<div class="tk-activity-label">' + escapeHtml(grp.title) + '</div>';
+          if (grp.icon) {
+            html += '<div class="tk-activity-label tk-activity-label-with-icon"><span class="tk-activity-label-slot">' + grp.icon + '</span><span>' + escapeHtml(grp.title) + '</span></div>';
+          } else {
+            html += '<div class="tk-activity-label"><span>' + escapeHtml(grp.title) + '</span></div>';
+          }
           for (const s of grp.sessions) {
             const isSelected = s.id === currentId;
             const projectLabel = labelOf(s);
@@ -2051,6 +2060,8 @@ window.__ModuleLoader__.load({
           margin-bottom: 8px;
         }
         .tk-activity-label {
+          display: flex;
+          align-items: center;
           margin-top: 8px;
           padding: 6px 12px 2px 28px;
           font-size: 12px;
@@ -2059,6 +2070,22 @@ window.__ModuleLoader__.load({
           letter-spacing: 0.02em;
           color: var(--dsw-alias-label-tertiary, #81858c);
           user-select: none;
+        }
+        .tk-activity-label-with-icon {
+          padding-left: 8px;
+        }
+        .tk-activity-label-slot {
+          width: 16px;
+          height: 18px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          margin-right: 4px;
+        }
+        .tk-label-spin {
+          flex-shrink: 0;
+          color: var(--dsw-alias-state-business-primary, #3b82f6);
+          animation: tk-spin 0.9s linear infinite;
         }
         .tk-activity-group:first-child .tk-activity-label {
           margin-top: 0;
