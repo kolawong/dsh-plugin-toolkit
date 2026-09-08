@@ -16,5 +16,6 @@
           viewActivity: true
           slashI18n: true
           changeReport: true
+        opencodeSession: true
         chatWorkspacePath: ''
         chatWorkspaceTitle: '通用对话'

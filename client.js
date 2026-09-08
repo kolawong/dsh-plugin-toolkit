@@ -28,7 +28,7 @@ window.__ModuleLoader__.load({
       IconCopyOutline16, IconCheckOutline16, Tooltip,
       IconPersonalizationOutline16, IconNewChatOutline16, IconEditOutline16,
       IconClockOutline16, IconGlobeOutline14, diffTotals,
-      IconBranchOutline16,
+      IconBranchOutline16, IconApiOutline14,
     } = require("@deepseek-ai/dsh-client-ui-primitives");
 
     function ClockIcon() {
@@ -170,6 +170,10 @@ window.__ModuleLoader__.load({
       optReportShort: "回合结束后汇总本轮文件改动",
       optReportDesc:
         "每回合结束后，若本轮有文件改动（edit / write / str_replace_editor），在回合尾部显示改动报告卡片：文件数与 +N -M 汇总、按文件行数清单（点击打开文件）、审核按钮弹出完整 diff。不追踪 bash 内的文件写入；不含撤销功能。",
+      optSessionTitle: "OpenCode 会话头",
+      optSessionShort: "为 OpenCode Go 请求补上 x-opencode-session",
+      optSessionDesc:
+        "OpenCode Go 要求每个请求携带 x-opencode-session（每段对话一个稳定会话 ID），缺失会被 400 拒绝。开启后，发往 opencode.ai（Go/Zen）的请求会自动带上当前对话的会话 ID，用于服务端路由与提示词缓存。需要 host 的 llm-pi-ai 支持 request-headers 事件（本机 dsh 已带）；User-Agent 已由 dsh 自身标识满足。",
       reportTitle: "已编辑 {count} 个文件",
       reportTitleOne: "已编辑 1 个文件",
       reportMore: "再显示 {count} 个文件",
@@ -232,6 +236,10 @@ window.__ModuleLoader__.load({
       optReportShort: "Per-turn file-change summary at the turn tail",
       optReportDesc:
         "After each turn, if it changed files (edit / write / str_replace_editor), a codex-style report card renders at the turn tail: file count with +N -M totals, a per-file line-count list (click opens the file), and a Review button opening the full diff. bash-side file writes are not tracked; undo is out of scope.",
+      optSessionTitle: "OpenCode session header",
+      optSessionShort: "Send x-opencode-session on OpenCode Go requests",
+      optSessionDesc:
+        "OpenCode Go requires x-opencode-session on every request (one stable session id per conversation) and 400-rejects requests without it. When enabled, requests served by opencode.ai (Go/Zen) endpoints automatically carry the current conversation's session id, which the server uses for routing and prompt caching. Needs the host's llm-pi-ai request-headers event (this machine's dsh has it); the user-agent requirement is already satisfied by dsh's own attribution headers.",
       reportTitle: "{count} files edited",
       reportTitleOne: "1 file edited",
       reportMore: "Show {count} more files",
@@ -1353,6 +1361,13 @@ window.__ModuleLoader__.load({
         shortKey: "optReportShort",
         descKey: "optReportDesc",
         icon: IconBranchOutline16,
+      },
+      {
+        key: "opencodeSession",
+        titleKey: "optSessionTitle",
+        shortKey: "optSessionShort",
+        descKey: "optSessionDesc",
+        icon: IconApiOutline14,
       },
     ];
 

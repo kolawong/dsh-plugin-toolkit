@@ -22,6 +22,12 @@ export interface ToolkitConfig {
     slashI18n: boolean;
     /** Codex-style per-turn change report card at the turn tail (default true). */
     changeReport: boolean;
+    /**
+     * Stamp the stable per-conversation x-opencode-session header on requests
+     * OpenCode (Go/Zen) endpoints serve, via the llm-pi-ai request-headers
+     * event (default true).
+     */
+    opencodeSession: boolean;
   };
   /**
    * Host-side directory the default chat workspace registers. Empty resolves

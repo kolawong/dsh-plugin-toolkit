@@ -80,6 +80,21 @@ codex 风格的回合改动报告。某个回合改动了文件（`edit` / `writ
 |---|---|---|
 | `optimizations.changeReport` | `true` | 回合尾部的改动报告卡片。 |
 
+### `opencodeSession`（默认开启）
+
+OpenCode Go 现在会对缺少 `x-opencode-session` 请求头的请求返回 400（`{"type":"MissingSessionID", ...}`），其规范还要求编码 Agent 使用自身专属的 user agent、并为每段对话发送一个稳定的会话 ID，以便服务端优化路由与提示词缓存。user agent 部分已由 dsh 满足——每个 provider 请求都带 `deepseek-harness/<version>` 归属标识。本优化补齐会话部分：监听 host 侧 llm-pi-ai 适配器的 `llm-pi-ai/request-headers` 事件，给发往 OpenCode 端点（主机名为 `opencode.ai` 或其子域——Go 与 Zen 通吃）的每个请求盖上当前对话的会话 ID。
+
+工作方式与边界：
+
+- 会话 ID 用的是 dsh 循环给每个请求盖上的会话身份（agent-loop 不变量强制要求），因此按构造就是每对话稳定的——新对话新 ID；同一段对话的各回合、重试、压缩、标题生成共用同一个 ID。
+- 对没有会话身份的临时一次性调用，回退为每个进程一个固定 ID，而不是放任请求被网关 400 拒绝；此类无会话调用在这个链路里本就罕见。
+- 依赖 host 的 `llm-pi-ai/request-headers` 事件（本仓库 dsh checkout 的一处小改动）。没有该事件的 host 上本优化静默休眠——请求原样发出，不报错也不伪装。
+- 非 OpenCode 端点完全不受影响：监听器对它们不贡献任何请求头。
+
+| 配置 | 默认 | 含义 |
+|---|---|---|
+| `optimizations.opencodeSession` | `true` | 为 OpenCode Go/Zen 请求发送每对话稳定的 `x-opencode-session` 请求头。 |
+
 ## 安装（web profile）
 
 ```sh

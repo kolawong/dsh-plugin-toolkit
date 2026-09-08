@@ -27,9 +27,17 @@
  *     tail (file list with +N -M counts and a review diff), aggregated
  *     client-side from the transcript's file-mutation tool calls.
  *
+ *  6. opencodeSession - OpenCode Go (and any provider whose endpoint targets
+ *     opencode.ai) rejects requests without a stable per-conversation
+ *     x-opencode-session header; this half listens on the llm-pi-ai
+ *     request-headers event and stamps the loop's own session id onto those
+ *     requests (the user-agent requirement is already covered by the harness's
+ *     attribution headers).
+ *
  * @license MIT
  */
 
+import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -54,7 +62,8 @@ export const Config = z.object({
     viewActivity: z.boolean().default(true),
     slashI18n: z.boolean().default(true),
     changeReport: z.boolean().default(true),
-  }).default({ workspacelessChat: true, editLastMessage: true, viewActivity: true, slashI18n: true, changeReport: true }),
+    opencodeSession: z.boolean().default(true),
+  }).default({ workspacelessChat: true, editLastMessage: true, viewActivity: true, slashI18n: true, changeReport: true, opencodeSession: true }),
   /**
    * Host-side directory the default chat workspace registers. Empty resolves
    * to <DSH_HOME>/chat; resolved before registration so the client always
@@ -114,6 +123,55 @@ async function ensureChatDir(config, logger) {
 }
 
 /**
+ * The header OpenCode's Go/Zen gateways require on every request.
+ */
+const OPENCODE_SESSION_HEADER = "x-opencode-session";
+
+/**
+ * Whether one provider endpoint targets OpenCode (Go or Zen): the host must be
+ * opencode.ai itself or a subdomain of it. Anything else keeps its headers
+ * exactly as before.
+ * @param {unknown} baseUrl - effective endpoint of the request in flight.
+ * @returns {boolean} whether the endpoint is an OpenCode one.
+ */
+function isOpenCodeEndpoint(baseUrl) {
+  const text = String(baseUrl ?? "");
+  if (text === "") return false;
+  let host;
+  try {
+    host = new URL(text).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return host === "opencode.ai" || host.endsWith(".opencode.ai");
+}
+
+/**
+ * Install the opencodeSession optimization: a listener on llm-pi-ai's
+ * request-headers event that stamps the conversation's session identity onto
+ * every request an OpenCode endpoint serves. The loop already stamps that
+ * identity on every request it builds (the agent-loop invariant requires it),
+ * so the header is stable per conversation by construction. A sessionless
+ * hand-built call falls back to one id per process rather than failing the
+ * request the gateway would otherwise 400. On a host without the event the
+ * listener simply never fires and this optimization stays dormant.
+ * @param {import('@deepseek-ai/cordis').Context} ctx - plugin context.
+ * @param {() => import('./index.d.ts').ToolkitRuntimeConfig} config - live config source.
+ * @returns {void}
+ */
+function installOpenCodeSession(ctx, config) {
+  let fallbackSessionId;
+  ctx.on("llm-pi-ai/request-headers", (request) => {
+    if (config().optimizations?.opencodeSession === false) return undefined;
+    if (!isOpenCodeEndpoint(request?.baseUrl)) return undefined;
+    const sessionId = typeof request?.sessionId === "string" && request.sessionId !== ""
+      ? request.sessionId
+      : undefined;
+    return { [OPENCODE_SESSION_HEADER]: sessionId ?? (fallbackSessionId ??= `dsh-session-${randomUUID()}`) };
+  });
+}
+
+/**
  * Plugin activation: register the `toolkit` settings namespace via
  * `installSettingsSection` (the canonical optional-settings wiring — the Web
  * settings card reads/writes the section live, and the composition entry
@@ -128,6 +186,14 @@ async function ensureChatDir(config, logger) {
 export function apply(ctx, config) {
   pluginConfig = { ...pluginConfig, ...(config || {}) };
   const logger = ctx.logger;
+
+  // The OpenCode session-header fix reads its toggle live from the settings
+  // scope, so switching the card applies to the very next request.
+  try {
+    installOpenCodeSession(ctx, currentConfig);
+  } catch (error) {
+    logger?.warn?.("[toolkit] opencodeSession listener registration:", error);
+  }
 
   try {
     installSettingsSection(ctx, settingsNamespace(NS), Config, {
