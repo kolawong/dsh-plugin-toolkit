@@ -82,14 +82,15 @@ codex 风格的回合改动报告。某个回合改动了文件（`edit` / `writ
 
 ### `opencodeSession`（默认开启）
 
-OpenCode Go 现在会对缺少 `x-opencode-session` 请求头的请求返回 400（`{"type":"MissingSessionID", ...}`），其规范还要求编码 Agent 使用自身专属的 user agent、并为每段对话发送一个稳定的会话 ID，以便服务端优化路由与提示词缓存。user agent 部分已由 dsh 满足——每个 provider 请求都带 `deepseek-harness/<version>` 归属标识。本优化补齐会话部分：监听 host 侧 llm-pi-ai 适配器的 `llm-pi-ai/request-headers` 事件，给发往 OpenCode 端点（主机名为 `opencode.ai` 或其子域——Go 与 Zen 通吃）的每个请求盖上当前对话的会话 ID。
+OpenCode Go 现在会对缺少 `x-opencode-session` 请求头的请求返回 400（`{"type":"MissingSessionID", ...}`），其规范还要求编码 Agent 使用自身专属的 user agent、并为每段对话发送一个稳定的会话 ID，以便服务端优化路由与提示词缓存。user agent 部分已由 dsh 满足——每个 provider 请求都带 `deepseek-harness/<version>` 归属标识。本优化补齐会话部分，且完全在插件侧实现：`llm/stream` 监听器用 `AsyncLocalStorage` 把当前请求的会话身份顺异步链带下去，启动期给 `globalThis.fetch` 包一层薄壳，对目标主机为 `opencode.ai` 或其子域的请求（Go 与 Zen 通吃）补上该头。
 
 工作方式与边界：
 
 - 会话 ID 用的是 dsh 循环给每个请求盖上的会话身份（agent-loop 不变量强制要求），因此按构造就是每对话稳定的——新对话新 ID；同一段对话的各回合、重试、压缩、标题生成共用同一个 ID。
-- 对没有会话身份的临时一次性调用，回退为每个进程一个固定 ID，而不是放任请求被网关 400 拒绝；此类无会话调用在这个链路里本就罕见。
-- 依赖 host 的 `llm-pi-ai/request-headers` 事件（本仓库 dsh checkout 的一处小改动）。没有该事件的 host 上本优化静默休眠——请求原样发出，不报错也不伪装。
-- 非 OpenCode 端点完全不受影响：监听器对它们不贡献任何请求头。
+- 对没有会话身份的临时一次性调用（含模型发现），回退为每个进程一个固定 ID，而不是放任请求被网关 400 拒绝。
+- fetch 包装只安装一次（有防重标记）、只在头部缺失时补写、装饰失败一律回落到原始调用——永远不会弄坏请求；非 OpenCode 请求字节级原样通过。
+- provider SDK 每次请求构造客户端时才解析全局 fetch（pi-ai 每次流式调用都新建 client），所以启动期包装即可生效，无需任何 dsh 源码改动，一键升级上游完全无冲突面。
+- 与 viewActivity 同为 100% 非侵入式外部实现：对 dsh 官方包零修改。
 
 | 配置 | 默认 | 含义 |
 |---|---|---|

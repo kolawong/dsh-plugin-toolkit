@@ -6,7 +6,7 @@
 import { mkdtemp, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deepEqual, equal, ok } from "node:assert/strict";
+import { equal, ok } from "node:assert/strict";
 
 const root = await mkdtemp(join(tmpdir(), "toolkit-smoke-"));
 process.env.DSH_HOME = root;
@@ -45,6 +45,14 @@ const ctx = {
 
 const mod = await import("../index.js");
 equal(mod.name, "toolkit", "plugin name");
+
+// A recording fake fetch must be in place BEFORE apply(): the opencodeSession
+// wrap captures whatever globalThis.fetch holds at install time.
+const fetchCalls = [];
+globalThis.fetch = async (input, init) => {
+  fetchCalls.push({ input, init });
+  return new Response("{}", { status: 200 });
+};
 equal(mod.inject.join(","), "settings", "server inject");
 ok(mod.Config, "Config schema exported");
 
@@ -82,33 +90,51 @@ watches[0]();
 await new Promise((resolve) => setTimeout(resolve, 50));
 ok((await stat(nextDir)).isDirectory(), "watch mkdirs the edited path");
 
-// ── opencodeSession: the request-headers listener ────────────────────────────
-const headerListeners = listeners.get("llm-pi-ai/request-headers") ?? [];
-equal(headerListeners.length, 1, "one request-headers listener registered");
-const contribute = headerListeners[0];
+// ── opencodeSession: the llm/stream listener + global fetch wrap ────────────
+const streamListeners = listeners.get("llm/stream") ?? [];
+equal(streamListeners.length, 1, "one llm/stream listener registered");
+const wrapStream = streamListeners[0];
+const WRAP_MARK = Symbol.for("dsh-plugin-toolkit.opencodeSession.fetchWrap");
+ok(globalThis.fetch[WRAP_MARK] === true, "global fetch is wrapped once");
 
-deepEqual(
-  contribute({ provider: "opencode-go", model: "m", baseUrl: "https://opencode.ai/zen/go/v1", sessionId: "session-7" }),
-  { "x-opencode-session": "session-7" },
-  "opencode.ai request gets the conversation's session id",
-);
-deepEqual(
-  contribute({ provider: "opencode", model: "m", baseUrl: "https://api.opencode.ai/v1", sessionId: "session-8" }),
-  { "x-opencode-session": "session-8" },
-  "opencode.ai subdomain matches too",
-);
-const fallback = contribute({ provider: "opencode-go", model: "m", baseUrl: "https://opencode.ai/zen/go/v1", sessionId: undefined });
-ok(typeof fallback?.["x-opencode-session"] === "string" && fallback["x-opencode-session"].startsWith("dsh-session-"), "sessionless call gets the per-process fallback id");
-equal(contribute({ provider: "opencode-go", model: "m", baseUrl: "https://opencode.ai/zen/go/v1", sessionId: undefined })["x-opencode-session"], fallback["x-opencode-session"], "fallback id is stable within the process");
-equal(contribute({ provider: "deepseek", model: "m", baseUrl: "https://api.deepseek.com/v1", sessionId: "session-9" }), undefined, "non-OpenCode endpoints are untouched");
-equal(contribute({ provider: "evil", model: "m", baseUrl: "https://evilopencode.ai/v1", sessionId: "session-9" }), undefined, "lookalike hosts do not match");
+/** A fake adapter stream whose body hits the wire mid-iteration, like an SDK. */
+function fakeAdapterStream(url, init) {
+  return (async function* () {
+    await globalThis.fetch(url, init);
+    yield { type: "text-delta", delta: "hi" };
+  })() ;
+}
 
-deepEqual(
-  (() => { liveValue = { ...liveValue, optimizations: { ...liveValue.optimizations, opencodeSession: false } }; return contribute({ provider: "opencode-go", model: "m", baseUrl: "https://opencode.ai/zen/go/v1", sessionId: "session-7" }); })(),
-  undefined,
-  "toggle off contributes nothing",
-);
+/** Consume the wrapped stream for one request and return the fetch calls seen. */
+async function drive(sessionId, url, init) {
+  const before = fetchCalls.length;
+  const stream = wrapStream(sessionId === undefined ? {} : { sessionId }, () => fakeAdapterStream(url, init));
+  for await (const _chunk of stream) { /* drain */ }
+  return fetchCalls.slice(before);
+}
+
+const GO_URL = "https://opencode.ai/zen/go/v1/chat/completions";
+let calls = await drive("session-7", GO_URL, { method: "POST" });
+equal(new Headers(calls[0].init.headers).get("x-opencode-session"), "session-7", "opencode.ai request gets the conversation's session id");
+calls = await drive("session-8", "https://api.opencode.ai/v1/chat/completions", { method: "POST" });
+equal(new Headers(calls[0].init.headers).get("x-opencode-session"), "session-8", "opencode.ai subdomain matches too");
+calls = await drive(undefined, GO_URL, { method: "POST" });
+const fallback = new Headers(calls[0].init.headers).get("x-opencode-session");
+ok(typeof fallback === "string" && fallback.startsWith("dsh-session-"), "sessionless call gets the per-process fallback id");
+calls = await drive(undefined, GO_URL, { method: "POST" });
+equal(new Headers(calls[0].init.headers).get("x-opencode-session"), fallback, "fallback id is stable within the process");
+calls = await drive("session-9", GO_URL, { method: "POST", headers: { "x-opencode-session": "keep-me" } });
+equal(new Headers(calls[0].init.headers).get("x-opencode-session"), "keep-me", "an existing header is never overwritten");
+calls = await drive("session-9", "https://api.deepseek.com/v1/chat/completions", { method: "POST" });
+equal(new Headers(calls[0].init.headers).get("x-opencode-session"), null, "non-OpenCode endpoints are untouched");
+calls = await drive("session-9", "https://evilopencode.ai/v1/chat/completions", { method: "POST" });
+equal(new Headers(calls[0].init.headers).get("x-opencode-session"), null, "lookalike hosts do not match");
+
+liveValue = { ...liveValue, optimizations: { ...liveValue.optimizations, opencodeSession: false } };
+calls = await drive("session-7", GO_URL, { method: "POST" });
+equal(new Headers(calls[0].init.headers).get("x-opencode-session"), null, "toggle off stamps nothing");
 liveValue = { ...liveValue, optimizations: { ...liveValue.optimizations, opencodeSession: true } };
-ok(contribute({ provider: "opencode-go", model: "m", baseUrl: "https://opencode.ai/zen/go/v1", sessionId: "session-7" }) !== undefined, "toggle back on resumes stamping");
+calls = await drive("session-7", GO_URL, { method: "POST" });
+equal(new Headers(calls[0].init.headers).get("x-opencode-session"), "session-7", "toggle back on resumes stamping");
 
 console.log("toolkit server smoke: OK");

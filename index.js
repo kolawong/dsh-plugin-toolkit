@@ -29,14 +29,18 @@
  *
  *  6. opencodeSession - OpenCode Go (and any provider whose endpoint targets
  *     opencode.ai) rejects requests without a stable per-conversation
- *     x-opencode-session header; this half listens on the llm-pi-ai
- *     request-headers event and stamps the loop's own session id onto those
- *     requests (the user-agent requirement is already covered by the harness's
- *     attribution headers).
+ *     x-opencode-session header; this half stamps the loop's own session id
+ *     onto those requests entirely from the plugin side: an llm/stream
+ *     listener carries the in-flight request's session identity through an
+ *     AsyncLocalStorage down to a thin globalThis.fetch wrap, which adds the
+ *     header only for OpenCode endpoints. Zero dsh source changes, zero
+ *     upgrade friction (the user-agent requirement is already covered by the
+ *     harness's attribution headers).
  *
  * @license MIT
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -128,47 +132,119 @@ async function ensureChatDir(config, logger) {
 const OPENCODE_SESSION_HEADER = "x-opencode-session";
 
 /**
- * Whether one provider endpoint targets OpenCode (Go or Zen): the host must be
- * opencode.ai itself or a subdomain of it. Anything else keeps its headers
- * exactly as before.
- * @param {unknown} baseUrl - effective endpoint of the request in flight.
+ * Marks our globalThis.fetch wrap so a re-apply (HMR, remount) never stacks a
+ * second wrap on top of the first.
+ */
+const FETCH_WRAP_MARK = Symbol.for("dsh-plugin-toolkit.opencodeSession.fetchWrap");
+
+/**
+ * Carries the in-flight request's session identity from the llm/stream seam
+ * down the async chain to the fetch layer. The store is `{ sessionId }` — the
+ * loop-stamped conversation identity, stable per conversation.
+ */
+const sessionContext = new AsyncLocalStorage();
+
+/** Process-wide identity for requests that carry no session (rare one-shots). */
+let fallbackSessionId;
+function fallbackSession() {
+  return (fallbackSessionId ??= `dsh-session-${randomUUID()}`);
+}
+
+/**
+ * Whether one URL targets OpenCode (Go or Zen): the host must be opencode.ai
+ * itself or a subdomain of it. Anything else keeps its request untouched.
+ * @param {string} urlText - the request URL text.
  * @returns {boolean} whether the endpoint is an OpenCode one.
  */
-function isOpenCodeEndpoint(baseUrl) {
-  const text = String(baseUrl ?? "");
-  if (text === "") return false;
+function isOpenCodeUrl(urlText) {
   let host;
   try {
-    host = new URL(text).hostname.toLowerCase();
+    host = new URL(urlText).hostname.toLowerCase();
   } catch {
     return false;
   }
   return host === "opencode.ai" || host.endsWith(".opencode.ai");
 }
 
+/** The URL one fetch call targets, whatever input shape the caller used. */
+function fetchInputUrl(input) {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.href;
+  if (input !== null && typeof input === "object" && typeof input.url === "string") return input.url;
+  return "";
+}
+
 /**
- * Install the opencodeSession optimization: a listener on llm-pi-ai's
- * request-headers event that stamps the conversation's session identity onto
- * every request an OpenCode endpoint serves. The loop already stamps that
- * identity on every request it builds (the agent-loop invariant requires it),
- * so the header is stable per conversation by construction. A sessionless
- * hand-built call falls back to one id per process rather than failing the
- * request the gateway would otherwise 400. On a host without the event the
- * listener simply never fires and this optimization stays dormant.
- * @param {import('@deepseek-ai/cordis').Context} ctx - plugin context.
- * @param {() => import('./index.d.ts').ToolkitRuntimeConfig} config - live config source.
+ * Wrap globalThis.fetch once: for OpenCode-bound requests that lack the
+ * session header, stamp the in-flight conversation's session id (or the
+ * process fallback for sessionless calls like model discovery). Provider SDKs
+ * resolve the global fetch when they construct their client — which pi-ai does
+ * per request — so a boot-time wrap is seen by every provider call. Anything
+ * not targeting OpenCode passes through byte-identical, the wrap is inert
+ * while the optimization is disabled, and a decoration failure can never break
+ * the underlying request.
  * @returns {void}
  */
-function installOpenCodeSession(ctx, config) {
-  let fallbackSessionId;
-  ctx.on("llm-pi-ai/request-headers", (request) => {
-    if (config().optimizations?.opencodeSession === false) return undefined;
-    if (!isOpenCodeEndpoint(request?.baseUrl)) return undefined;
-    const sessionId = typeof request?.sessionId === "string" && request.sessionId !== ""
-      ? request.sessionId
-      : undefined;
-    return { [OPENCODE_SESSION_HEADER]: sessionId ?? (fallbackSessionId ??= `dsh-session-${randomUUID()}`) };
-  });
+function installFetchWrap() {
+  const original = globalThis.fetch;
+  if (typeof original !== "function" || original[FETCH_WRAP_MARK] === true) return;
+  const wrapped = function (input, init) {
+    try {
+      if (currentConfig().optimizations?.opencodeSession !== false) {
+        const url = fetchInputUrl(input);
+        if (url.includes("opencode.ai") && isOpenCodeUrl(url)) {
+          const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+          if (!headers.has(OPENCODE_SESSION_HEADER)) {
+            headers.set(OPENCODE_SESSION_HEADER, sessionContext.getStore()?.sessionId ?? fallbackSession());
+          }
+          return original.call(globalThis, input, { ...init, headers });
+        }
+      }
+    } catch {
+      // fall through: a decoration must never break the request it decorates
+    }
+    return original.call(globalThis, input, init);
+  };
+  wrapped[FETCH_WRAP_MARK] = true;
+  globalThis.fetch = wrapped;
+}
+
+/**
+ * Install the opencodeSession optimization. Two cooperating halves, both
+ * plugin-side:
+ *  - an llm/stream listener (the seam's public waterfall) that re-enters every
+ *    inner iteration inside the session's AsyncLocalStorage context, so the
+ *    adapter's and SDK's downstream async work — including the provider fetch
+ *    — observes the conversation's session id;
+ *  - the fetch wrap above, which turns that context into the wire header.
+ * The loop stamps the identity on every request it builds (the agent-loop
+ * invariant requires it), so the header is stable per conversation by
+ * construction. On a host without the llm/stream seam the listener simply
+ * never fires and requests go out exactly as before.
+ * @param {import('@deepseek-ai/cordis').Context} ctx - plugin context.
+ * @returns {void}
+ */
+function installOpenCodeSession(ctx) {
+  installFetchWrap();
+  ctx.on("llm/stream", (options, next) => {
+    const sessionId = options?.sessionId === undefined ? undefined : String(options.sessionId);
+    if (sessionId === undefined) return next();
+    const stream = next();
+    return (async function* () {
+      const iterator = stream[Symbol.asyncIterator]();
+      try {
+        while (true) {
+          // Each resume of the inner stream re-enters the session context, so
+          // the whole downstream async chain (adapter, SDK, fetch) carries it.
+          const result = await sessionContext.run({ sessionId }, () => iterator.next());
+          if (result.done) return;
+          yield result.value;
+        }
+      } finally {
+        await iterator.return?.(undefined);
+      }
+    })();
+  }, { global: true });
 }
 
 /**
@@ -190,7 +266,7 @@ export function apply(ctx, config) {
   // The OpenCode session-header fix reads its toggle live from the settings
   // scope, so switching the card applies to the very next request.
   try {
-    installOpenCodeSession(ctx, currentConfig);
+    installOpenCodeSession(ctx);
   } catch (error) {
     logger?.warn?.("[toolkit] opencodeSession listener registration:", error);
   }

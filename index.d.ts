@@ -24,8 +24,8 @@ export interface ToolkitConfig {
     changeReport: boolean;
     /**
      * Stamp the stable per-conversation x-opencode-session header on requests
-     * OpenCode (Go/Zen) endpoints serve, via the llm-pi-ai request-headers
-     * event (default true).
+     * OpenCode (Go/Zen) endpoints serve — plugin-side via an llm/stream
+     * listener plus a globalThis.fetch wrap, no dsh source changes (default true).
      */
     opencodeSession: boolean;
   };

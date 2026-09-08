@@ -173,7 +173,7 @@ window.__ModuleLoader__.load({
       optSessionTitle: "OpenCode 会话头",
       optSessionShort: "为 OpenCode Go 请求补上 x-opencode-session",
       optSessionDesc:
-        "OpenCode Go 要求每个请求携带 x-opencode-session（每段对话一个稳定会话 ID），缺失会被 400 拒绝。开启后，发往 opencode.ai（Go/Zen）的请求会自动带上当前对话的会话 ID，用于服务端路由与提示词缓存。需要 host 的 llm-pi-ai 支持 request-headers 事件（本机 dsh 已带）；User-Agent 已由 dsh 自身标识满足。",
+        "OpenCode Go 要求每个请求携带 x-opencode-session（每段对话一个稳定会话 ID），缺失会被 400 拒绝。开启后，发往 opencode.ai（Go/Zen）的请求会自动带上当前对话的会话 ID，用于服务端路由与提示词缓存。100% 插件侧实现，不改 dsh 源码、不影响一键升级；User-Agent 已由 dsh 自身标识满足。",
       reportTitle: "已编辑 {count} 个文件",
       reportTitleOne: "已编辑 1 个文件",
       reportMore: "再显示 {count} 个文件",
@@ -239,7 +239,7 @@ window.__ModuleLoader__.load({
       optSessionTitle: "OpenCode session header",
       optSessionShort: "Send x-opencode-session on OpenCode Go requests",
       optSessionDesc:
-        "OpenCode Go requires x-opencode-session on every request (one stable session id per conversation) and 400-rejects requests without it. When enabled, requests served by opencode.ai (Go/Zen) endpoints automatically carry the current conversation's session id, which the server uses for routing and prompt caching. Needs the host's llm-pi-ai request-headers event (this machine's dsh has it); the user-agent requirement is already satisfied by dsh's own attribution headers.",
+        "OpenCode Go requires x-opencode-session on every request (one stable session id per conversation) and 400-rejects requests without it. When enabled, requests served by opencode.ai (Go/Zen) endpoints automatically carry the current conversation's session id, which the server uses for routing and prompt caching. 100% plugin-side: no dsh source changes, no upgrade friction; the user-agent requirement is already satisfied by dsh's own attribution headers.",
       reportTitle: "{count} files edited",
       reportTitleOne: "1 file edited",
       reportMore: "Show {count} more files",

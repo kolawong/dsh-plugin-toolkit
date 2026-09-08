@@ -82,14 +82,15 @@ How it works, and its bounds:
 
 ### `opencodeSession` (default on)
 
-OpenCode Go now 400-rejects requests that lack `x-opencode-session` (`{"type":"MissingSessionID", ...}`), and its guidelines ask coding agents to identify themselves with their own user agent and to send one stable session id per conversation so the gateway can route requests and reuse prompt caches. The user-agent part is already satisfied — every dsh provider request carries `deepseek-harness/<version>` attribution. This optimization fixes the session half: it listens on the host llm-pi-ai adapter's `llm-pi-ai/request-headers` event and stamps the conversation's own session id onto every request served by an OpenCode endpoint (host `opencode.ai` or a subdomain — Go and Zen alike).
+OpenCode Go now 400-rejects requests that lack `x-opencode-session` (`{"type":"MissingSessionID", ...}`), and its guidelines ask coding agents to identify themselves with their own user agent and to send one stable session id per conversation so the gateway can route requests and reuse prompt caches. The user-agent part is already satisfied — every dsh provider request carries `deepseek-harness/<version>` attribution. This optimization fixes the session half, entirely from the plugin side: an `llm/stream` listener carries the in-flight request's session identity down the async chain via `AsyncLocalStorage`, and a thin boot-time `globalThis.fetch` wrap stamps the header onto any request whose target host is `opencode.ai` or a subdomain (Go and Zen alike).
 
 How it works, and its bounds:
 
 - The id is the loop-stamped session identity dsh already attaches to every request it builds (the agent-loop invariant requires it), so the header is stable per conversation by construction — new conversation, new id; same conversation, same id across turns, retries, compaction, and title generation.
-- A hand-built call that carries no session identity falls back to one id per process rather than failing with the gateway's `MissingSessionID`; sessionless one-shots are rare through this seam.
-- Needs the host's `llm-pi-ai/request-headers` event (a small addition to this repo's dsh checkout). On a host without it the optimization stays dormant — requests simply go out exactly as before.
-- Non-OpenCode endpoints are untouched; the listener contributes nothing for them.
+- A call that carries no session identity (rare hand-built one-shots; also model discovery) falls back to one id per process rather than failing with the gateway's `MissingSessionID`.
+- The wrap is installed once (mark-guarded), adds the header only when it is absent, and any decoration failure falls through to the plain fetch — it can never break a request. Non-OpenCode requests pass through byte-identical.
+- Provider SDKs resolve the global fetch per request (pi-ai constructs its client per stream call), so the boot-time wrap needs no dsh source changes and survives one-click upstream upgrades untouched.
+- 100% non-invasive external implementation, like viewActivity: zero modifications to dsh core packages.
 
 | Config | Default | Meaning |
 |---|---|---|
