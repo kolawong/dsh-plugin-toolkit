@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="400" viewBox="0 0 960 400" role="img" aria-labelledby="t d">
+  <title id="t">opencodeSession — request header stamp</title>
+  <desc id="d">An llm/stream listener captures the in-flight session identity into AsyncLocalStorage; a boot-time globalThis.fetch wrap stamps x-opencode-session on requests to opencode.ai and forwards everything else unchanged.</desc>
+  <defs>
+    <style>
+      .bg{fill:#ffffff;} .panel{fill:#f6f8fa;stroke:#d0d7de;} .card{fill:#ffffff;stroke:#d0d7de;}
+      .t{fill:#1f2328;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",Helvetica,Arial,sans-serif;}
+      .muted{fill:#59636e;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",Helvetica,Arial,sans-serif;}
+      .title{font-size:19px;font-weight:700;} .sub{font-size:12px;} .name{font-size:12.5px;font-weight:600;} .tiny{font-size:11px;}
+      .code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;}
+      .arrow{stroke:#59636e;stroke-width:1.5;fill:none;}
+      .green-bg{fill:#dafbe1;stroke:#4ac26b;} .green{fill:#1a7f37;}
+      .blue-bg{fill:#ddf4ff;stroke:#54aeff;} .blue{fill:#0969da;}
+      @media (prefers-color-scheme: dark){
+        .bg{fill:#0d1117;} .panel{fill:#161b22;stroke:#30363d;} .card{fill:#1c2128;stroke:#30363d;}
+        .t{fill:#e6edf3;} .muted{fill:#9198a1;}
+        .green-bg{fill:#0f2f1a;stroke:#2ea043;} .green{fill:#3fb950;}
+        .blue-bg{fill:#0c2d6b;stroke:#1f6feb;} .blue{fill:#58a6ff;} .arrow{stroke:#9198a1;}
+      }
+    </style>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#59636e"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="960" height="400" rx="16"/>
+  <text class="t title" x="34" y="46">opencodeSession — per-conversation request header</text>
+  <text class="muted sub" x="34" y="70">Plugin-side only: one listener, one async-context carrier, one mark-guarded fetch wrap. No dsh source changes, no upgrade friction.</text>
+
+  <!-- transport chain -->
+  <rect class="card" x="32" y="104" width="210" height="88" rx="11"/>
+  <text class="t name" x="48" y="132">llm/stream listener</text>
+  <text class="muted tiny" x="48" y="152">reads the in-flight request's</text>
+  <text class="muted tiny" x="48" y="168">session identity (loop-stamped)</text>
+  <text class="blue code" x="48" y="184">1</text>
+
+  <path class="arrow" marker-end="url(#ah)" d="M 244 148 L 264 148"/>
+
+  <rect class="card" x="266" y="104" width="210" height="88" rx="11"/>
+  <text class="t name" x="282" y="132">AsyncLocalStorage</text>
+  <text class="muted tiny" x="282" y="152">carries that identity down the</text>
+  <text class="muted tiny" x="282" y="168">whole async chain, per request</text>
+  <text class="blue code" x="282" y="184">2</text>
+
+  <path class="arrow" marker-end="url(#ah)" d="M 478 148 L 498 148"/>
+
+  <rect class="card" x="500" y="104" width="210" height="88" rx="11"/>
+  <text class="t name" x="516" y="132">globalThis.fetch wrap</text>
+  <text class="muted tiny" x="516" y="152">installed once at boot and</text>
+  <text class="muted tiny" x="516" y="168">mark-guarded against re-wrap</text>
+  <text class="blue code" x="516" y="184">3</text>
+
+  <path class="arrow" marker-end="url(#ah)" d="M 712 148 L 732 148"/>
+
+  <rect class="card" x="734" y="104" width="194" height="88" rx="11"/>
+  <text class="t name" x="750" y="132">provider request</text>
+  <text class="muted tiny" x="750" y="152">SDKs resolve the global fetch</text>
+  <text class="muted tiny" x="750" y="168">per stream call, so no patching</text>
+  <text class="blue code" x="750" y="184">4</text>
+
+  <path class="arrow" marker-end="url(#ah)" d="M 480 192 L 480 238"/>
+  <text class="muted tiny" x="490" y="220">at request time</text>
+
+  <!-- decision + outcomes -->
+  <rect class="panel" x="32" y="244" width="300" height="88" rx="11"/>
+  <text class="t name" x="48" y="278">Which host is being called?</text>
+  <text class="muted tiny" x="48" y="298">opencode.ai or a subdomain</text>
+  <text class="muted tiny" x="48" y="314">(Go and Zen alike) → yes</text>
+
+  <path class="arrow" marker-end="url(#ah)" d="M 332 272 L 358 266"/>
+  <path class="arrow" marker-end="url(#ah)" d="M 332 306 L 358 314"/>
+
+  <rect class="green-bg" x="360" y="244" width="568" height="40" rx="9"/>
+  <text class="green name" x="376" y="262">OpenCode → add <tspan class="code">x-opencode-session</tspan> when absent, then forward</text>
+  <text class="muted tiny" x="376" y="277">stable per conversation by construction; a bare hand-built call falls back to one id per process</text>
+
+  <rect class="card" x="360" y="292" width="568" height="40" rx="9"/>
+  <text class="t name" x="376" y="310">Any other host → forward byte-identical</text>
+  <text class="muted tiny" x="376" y="325">any decoration failure falls through to the plain fetch, so a request can never break</text>
+
+  <text class="muted tiny" x="34" y="366">The user-agent half of OpenCode's guidelines is already satisfied: every dsh provider request carries its own <tspan class="code">deepseek-harness/&lt;version&gt;</tspan> attribution.</text>
+  <text class="muted tiny" x="34" y="384">Same conversation → same id across turns, retries, compaction and title generation; new conversation → new id. Disable the toggle and no header is added.</text>
+</svg>

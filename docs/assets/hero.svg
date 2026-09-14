@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="240" viewBox="0 0 960 240" role="img" aria-labelledby="t d">
+  <title id="t">dsh-plugin-toolkit</title>
+  <desc id="d">Small, runtime-toggleable quality-of-life optimizations for DeepSeek Harness, in one package with seven optimizations.</desc>
+  <defs>
+    <style>
+      .bg{fill:#ffffff;} .card{fill:#f6f8fa;stroke:#d0d7de;}
+      .t{fill:#1f2328;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",Helvetica,Arial,sans-serif;}
+      .muted{fill:#59636e;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",Helvetica,Arial,sans-serif;}
+      .h1{font-size:34px;font-weight:800;letter-spacing:-.5px;} .sub{font-size:14.5px;} .meta{font-size:12px;}
+      .chip{font-size:11px;font-weight:600;} .num{font-size:10.5px;font-weight:800;}
+      .badge{fill:#ddf4ff;stroke:#54aeff;} .blue{fill:#0969da;}
+      @media (prefers-color-scheme: dark){
+        .bg{fill:#0d1117;} .card{fill:#161b22;stroke:#30363d;}
+        .t{fill:#e6edf3;} .muted{fill:#9198a1;}
+        .badge{fill:#0c2d6b;stroke:#1f6feb;} .blue{fill:#58a6ff;}
+      }
+    </style>
+  </defs>
+
+  <rect class="bg" width="960" height="240" rx="18"/>
+
+  <text class="t h1" x="48" y="94">dsh-plugin-toolkit</text>
+  <text class="muted sub" x="48" y="126">Small, runtime-toggleable quality-of-life optimizations for DeepSeek Harness.</text>
+  <text class="muted meta" x="48" y="152">One package · two halves · seven optimizations · zero dsh core changes</text>
+
+  <g class="card">
+    <rect x="54"  y="176" width="114" height="34" rx="9"/>
+    <rect x="177" y="176" width="114" height="34" rx="9"/>
+    <rect x="300" y="176" width="114" height="34" rx="9"/>
+    <rect x="423" y="176" width="114" height="34" rx="9"/>
+    <rect x="546" y="176" width="114" height="34" rx="9"/>
+    <rect x="669" y="176" width="114" height="34" rx="9"/>
+    <rect x="792" y="176" width="114" height="34" rx="9"/>
+  </g>
+  <g class="badge">
+    <circle cx="74"  cy="193" r="9"/><circle cx="197" cy="193" r="9"/><circle cx="320" cy="193" r="9"/>
+    <circle cx="443" cy="193" r="9"/><circle cx="566" cy="193" r="9"/><circle cx="689" cy="193" r="9"/>
+    <circle cx="812" cy="193" r="9"/>
+  </g>
+  <g class="blue num">
+    <text x="74"  y="197" text-anchor="middle">1</text><text x="197" y="197" text-anchor="middle">2</text>
+    <text x="320" y="197" text-anchor="middle">3</text><text x="443" y="197" text-anchor="middle">4</text>
+    <text x="566" y="197" text-anchor="middle">5</text><text x="689" y="197" text-anchor="middle">6</text>
+    <text x="812" y="197" text-anchor="middle">7</text>
+  </g>
+  <g class="t chip">
+    <text x="92"  y="197">Chat</text><text x="215" y="197">Edit</text><text x="338" y="197">Activity</text>
+    <text x="461" y="197">i18n</text><text x="584" y="197">Report</text><text x="707" y="197">Session</text>
+    <text x="830" y="197">Models</text>
+  </g>
+</svg>

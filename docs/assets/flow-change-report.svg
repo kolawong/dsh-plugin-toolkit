@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="400" viewBox="0 0 960 400" role="img" aria-labelledby="t d">
+  <title id="t">changeReport — per-turn change card</title>
+  <desc id="d">Successful file-mutation tool calls and run_code sub-calls feed a client-side turn accumulator, which renders a compact change card with per-file line counts at the turn tail.</desc>
+  <defs>
+    <style>
+      .bg{fill:#ffffff;} .panel{fill:#f6f8fa;stroke:#d0d7de;} .row{fill:#ffffff;stroke:#d0d7de;}
+      .t{fill:#1f2328;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",Helvetica,Arial,sans-serif;}
+      .muted{fill:#59636e;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",Helvetica,Arial,sans-serif;}
+      .title{font-size:19px;font-weight:700;} .sub{font-size:12px;} .lab{font-size:12px;font-weight:700;letter-spacing:.06em;}
+      .name{font-size:11.5px;font-weight:600;} .tiny{font-size:10.5px;}
+      .code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:10.5px;font-weight:600;}
+      .arrow{stroke:#59636e;stroke-width:1.5;fill:none;}
+      .green-bg{fill:#dafbe1;stroke:#4ac26b;} .green{fill:#1a7f37;} .red{fill:#cf222e;} .blue{fill:#0969da;}
+      .btn{fill:#1f883d;stroke:#1f883d;} .btn-t{fill:#ffffff;font-size:10.5px;font-weight:700;}
+      .strike{stroke:#cf222e;stroke-width:1.2;}
+      @media (prefers-color-scheme: dark){
+        .bg{fill:#0d1117;} .panel{fill:#161b22;stroke:#30363d;} .row{fill:#1c2128;stroke:#30363d;}
+        .t{fill:#e6edf3;} .muted{fill:#9198a1;}
+        .green-bg{fill:#0f2f1a;stroke:#2ea043;} .green{fill:#3fb950;} .red{fill:#f85149;} .blue{fill:#58a6ff;}
+        .btn{fill:#238636;stroke:#238636;} .arrow{stroke:#9198a1;} .strike{stroke:#f85149;}
+      }
+    </style>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#59636e"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="960" height="400" rx="16"/>
+  <text class="t title" x="34" y="46">changeReport — per-turn change card</text>
+  <text class="muted sub" x="34" y="70">Mutation calls are observed in the transcript, aggregated per turn, and rendered at the turn tail — a superset of the stock produced-files tail.</text>
+
+  <!-- transcript -->
+  <rect class="panel" x="24" y="98" width="280" height="222" rx="12"/>
+  <text class="muted lab" x="42" y="122">TRANSCRIPT</text>
+  <text class="muted tiny" x="128" y="122">client-side events</text>
+
+  <rect class="green-bg" x="42" y="134" width="244" height="32" rx="8"/>
+  <text class="green code" x="56" y="155">edit · src/a.ts</text>
+  <rect class="green-bg" x="42" y="172" width="244" height="32" rx="8"/>
+  <text class="green code" x="56" y="193">write · README.md</text>
+  <rect class="green-bg" x="42" y="210" width="244" height="32" rx="8"/>
+  <text class="green code" x="56" y="231">run_code → edit · src/b.ts</text>
+  <rect class="row" x="42" y="248" width="244" height="32" rx="8"/>
+  <text class="muted code" x="56" y="269">bash sed -i …</text>
+  <line class="strike" x1="56" y1="265" x2="150" y2="265"/>
+  <text class="muted tiny" x="42" y="300">Only dedicated mutation tools are tracked;</text>
+  <text class="muted tiny" x="42" y="314">shell-side writes are invisible to the transcript.</text>
+
+  <path class="arrow" marker-end="url(#ah)" d="M 308 208 L 332 208"/>
+
+  <!-- accumulator -->
+  <rect class="panel" x="336" y="98" width="280" height="222" rx="12"/>
+  <text class="muted lab" x="354" y="122">ACCUMULATOR</text>
+  <text class="muted tiny" x="458" y="122">one hunk per call</text>
+
+  <rect class="row" x="354" y="134" width="244" height="28" rx="8"/>
+  <text class="t code" x="368" y="153">before / after · src/a.ts</text>
+  <rect class="row" x="354" y="168" width="244" height="28" rx="8"/>
+  <text class="t code" x="368" y="187">before / after · README.md</text>
+  <rect class="row" x="354" y="202" width="244" height="28" rx="8"/>
+  <text class="t code" x="368" y="221">before / after · src/b.ts</text>
+
+  <rect class="green-bg" x="354" y="238" width="244" height="30" rx="8"/>
+  <text class="green code" x="368" y="258">diffTotals → +42  −17</text>
+  <text class="muted tiny" x="354" y="290">Failed calls and post-assistant settlements</text>
+  <text class="muted tiny" x="354" y="304">contribute nothing; results are rebuilt per render.</text>
+
+  <path class="arrow" marker-end="url(#ah)" d="M 620 208 L 644 208"/>
+
+  <!-- rendered card -->
+  <rect class="panel" x="648" y="98" width="288" height="222" rx="12"/>
+  <text class="muted lab" x="666" y="122">TURN TAIL</text>
+  <text class="muted tiny" x="744" y="122">conversation.chat.turnTail</text>
+
+  <rect class="row" x="666" y="134" width="252" height="140" rx="10"/>
+  <text class="t name" x="680" y="156">3 files edited · +42 −17</text>
+  <line x1="666" y1="168" x2="918" y2="168" stroke="#d0d7de"/>
+  <text class="t code" x="680" y="188">src/a.ts</text><text class="green code" x="880" y="188" text-anchor="end">+12 −3</text>
+  <text class="t code" x="680" y="210">README.md</text><text class="green code" x="880" y="210" text-anchor="end">+18 −0</text>
+  <text class="t code" x="680" y="232">src/b.ts</text><text class="green code" x="880" y="232" text-anchor="end">+12 −14</text>
+  <rect class="btn" x="680" y="244" width="62" height="22" rx="6"/>
+  <text class="btn-t" x="711" y="259" text-anchor="middle">Review ›</text>
+  <text class="muted tiny" x="756" y="259">opens the full diff</text>
+
+  <text class="muted tiny" x="666" y="296">Clicking a row opens the file; beyond four rows a</text>
+  <text class="muted tiny" x="666" y="310">“show more” expander keeps the tail compact.</text>
+
+  <text class="muted tiny" x="34" y="352">V1 is display-only: there is no undo, because reverting files on disk needs a host capability the browser does not have. Disabling the toggle restores the stock turn tail verbatim.</text>
+  <text class="muted tiny" x="34" y="372">No core changes: the slot, the turn-data registry and the diff primitives are all public extension surfaces, and the card declines on turns without mutations.</text>
+</svg>

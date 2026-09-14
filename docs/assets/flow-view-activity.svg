@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="440" viewBox="0 0 960 440" role="img" aria-labelledby="t d">
+  <title id="t">viewActivity — sidebar re-sort</title>
+  <desc id="d">The default workspace-sectioned conversation list, and the activity overlay grouping running conversations first and the rest by Today, Yesterday and Earlier.</desc>
+  <defs>
+    <style>
+      .bg{fill:#ffffff;} .panel{fill:#f6f8fa;stroke:#d0d7de;} .row{fill:#ffffff;stroke:#d0d7de;}
+      .t{fill:#1f2328;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",Helvetica,Arial,sans-serif;}
+      .muted{fill:#59636e;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",Helvetica,Arial,sans-serif;}
+      .title{font-size:19px;font-weight:700;} .sub{font-size:12px;} .lab{font-size:12px;font-weight:700;letter-spacing:.06em;}
+      .name{font-size:12px;font-weight:600;} .grp{font-size:10.5px;font-weight:700;letter-spacing:.08em;} .tiny{font-size:10.5px;}
+      .arrow{stroke:#59636e;stroke-width:1.5;fill:none;}
+      .green-bg{fill:#dafbe1;stroke:#4ac26b;} .green{fill:#1a7f37;}
+      .accent{fill:#ddf4ff;stroke:#54aeff;} .ico{stroke:#59636e;stroke-width:1.5;fill:none;stroke-linecap:round;stroke-linejoin:round;}
+      @media (prefers-color-scheme: dark){
+        .bg{fill:#0d1117;} .panel{fill:#161b22;stroke:#30363d;} .row{fill:#1c2128;stroke:#30363d;}
+        .t{fill:#e6edf3;} .muted{fill:#9198a1;}
+        .green-bg{fill:#0f2f1a;stroke:#2ea043;} .green{fill:#3fb950;}
+        .accent{fill:#0c2d6b;stroke:#1f6feb;} .ico{stroke:#9198a1;} .arrow{stroke:#9198a1;}
+      }
+    </style>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#59636e"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="960" height="440" rx="16"/>
+  <text class="t title" x="34" y="46">viewActivity — sidebar re-sort</text>
+  <text class="muted sub" x="34" y="70">The icon lands after the sidebar search control; clicking it swaps the session tree in place, clicking again restores it.</text>
+
+  <!-- default -->
+  <rect class="panel" x="24" y="96" width="420" height="278" rx="12"/>
+  <g class="ico" transform="translate(42,110)"><circle cx="8" cy="8" r="6.5"/><path d="M8 4.5v3.5l2.4 1.5"/></g>
+  <text class="muted lab" x="62" y="123">DEFAULT</text>
+  <text class="muted tiny" x="150" y="123">workspace sections</text>
+
+  <text class="muted grp" x="42" y="152">MY-PROJECT</text>
+  <rect class="row" x="42" y="160" width="384" height="34" rx="8"/>
+  <text class="t name" x="58" y="182">Refactor the parser</text><text class="muted tiny" x="410" y="182" text-anchor="end">2h</text>
+  <rect class="row" x="42" y="200" width="384" height="34" rx="8"/>
+  <text class="t name" x="58" y="222">Fix the CI flake</text><text class="muted tiny" x="410" y="222" text-anchor="end">yesterday</text>
+
+  <text class="muted grp" x="42" y="258">通用对话</text>
+  <rect class="row" x="42" y="266" width="384" height="34" rx="8"/>
+  <text class="t name" x="58" y="288">Draft the release notes</text><text class="muted tiny" x="410" y="288" text-anchor="end">Mon</text>
+  <rect class="green-bg" x="42" y="306" width="384" height="34" rx="8"/>
+  <text class="green name" x="58" y="328">◐ Build the docs</text><text class="green tiny" x="410" y="328" text-anchor="end">running</text>
+
+  <!-- toggle arrow -->
+  <path class="arrow" marker-start="url(#ah)" marker-end="url(#ah)" d="M 448 230 L 508 230"/>
+  <text class="t tiny" x="478" y="216" text-anchor="middle">activity</text>
+  <text class="muted tiny" x="478" y="252" text-anchor="middle">toggle</text>
+
+  <!-- activity overlay -->
+  <rect class="panel" x="516" y="96" width="420" height="278" rx="12"/>
+  <g class="ico" transform="translate(534,110)"><circle cx="8" cy="8" r="6.5"/><path d="M8 4.5v3.5l2.4 1.5"/></g>
+  <text class="t lab" x="554" y="123">ACTIVITY</text>
+  <text class="muted tiny" x="628" y="123">running first, then by day</text>
+
+  <text class="green grp" x="534" y="152">PRIORITY · RUNNING</text>
+  <rect class="green-bg" x="534" y="160" width="384" height="34" rx="8"/>
+  <text class="green name" x="550" y="182">◐ Build the docs</text><text class="green tiny" x="902" y="182" text-anchor="end">running</text>
+
+  <text class="muted grp" x="534" y="212">TODAY</text>
+  <rect class="row" x="534" y="220" width="384" height="34" rx="8"/>
+  <text class="t name" x="550" y="242">Refactor the parser</text><text class="muted tiny" x="902" y="242" text-anchor="end">2h</text>
+
+  <text class="muted grp" x="534" y="272">YESTERDAY</text>
+  <rect class="row" x="534" y="280" width="384" height="34" rx="8"/>
+  <text class="t name" x="550" y="302">Fix the CI flake</text><text class="muted tiny" x="902" y="302" text-anchor="end">yesterday</text>
+
+  <text class="muted grp" x="534" y="332">EARLIER</text>
+  <rect class="row" x="534" y="340" width="384" height="30" rx="8"/>
+  <text class="t name" x="550" y="360">Draft the release notes</text><text class="muted tiny" x="902" y="360" text-anchor="end">Mon</text>
+
+  <text class="muted tiny" x="34" y="404">100% non-invasive: the overlay hooks the sidebar header and re-renders the existing session tree — no core package is modified, no conflict with upstream upgrades.</text>
+  <text class="muted tiny" x="34" y="422">Conversations stay fully interactive: opening, renaming and deleting keep working because the same nodes are only re-parented, never rebuilt.</text>
+</svg>

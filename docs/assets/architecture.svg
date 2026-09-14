@@ -1,0 +1,153 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="560" viewBox="0 0 960 560" role="img" aria-labelledby="archTitle archDesc">
+  <title id="archTitle">dsh-plugin-toolkit architecture</title>
+  <desc id="archDesc">One package with a browser client half and a dsh host half, wired to external OpenCode and models.dev services.</desc>
+  <defs>
+    <style>
+      .bg   { fill:#ffffff; }
+      .panel{ fill:#f6f8fa; stroke:#d0d7de; }
+      .card { fill:#ffffff; stroke:#d0d7de; }
+      .t    { fill:#1f2328; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",Helvetica,Arial,sans-serif; }
+      .muted{ fill:#59636e; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",Helvetica,Arial,sans-serif; }
+      .title{ font-size:19px; font-weight:700; }
+      .sub  { font-size:12px; }
+      .lab  { font-size:12.5px; font-weight:600; }
+      .tiny { font-size:10.5px; }
+      .code { font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace; font-size:11.5px; font-weight:600; }
+      .band { font-size:11px; font-weight:700; letter-spacing:.08em; }
+      .blue  { fill:#0969da; } .green { fill:#1a7f37; } .amber { fill:#9a6700; }
+      .purple{ fill:#8250df; } .red   { fill:#cf222e; }
+      .blue-bg  { fill:#ddf4ff; stroke:#54aeff; }
+      .green-bg { fill:#dafbe1; stroke:#4ac26b; }
+      .amber-bg { fill:#fff8c5; stroke:#d4a72c; }
+      .purple-bg{ fill:#fbefff; stroke:#c297ff; }
+      .red-bg   { fill:#ffebe9; stroke:#ff8182; }
+      .arrow{ stroke:#59636e; stroke-width:1.4; fill:none; }
+      .badge{ font-size:10px; font-weight:700; }
+      @media (prefers-color-scheme: dark) {
+        .bg   { fill:#0d1117; }
+        .panel{ fill:#161b22; stroke:#30363d; }
+        .card { fill:#1c2128; stroke:#30363d; }
+        .t    { fill:#e6edf3; }
+        .muted{ fill:#9198a1; }
+        .blue  { fill:#58a6ff; } .green { fill:#3fb950; } .amber { fill:#d29922; }
+        .purple{ fill:#a371f7; } .red   { fill:#f85149; }
+        .blue-bg  { fill:#0c2d6b; stroke:#1f6feb; }
+        .green-bg { fill:#0f2f1a; stroke:#2ea043; }
+        .amber-bg { fill:#3a2d04; stroke:#9e6a03; }
+        .purple-bg{ fill:#2b1a4a; stroke:#8957e5; }
+        .red-bg   { fill:#3c1618; stroke:#da3633; }
+        .arrow{ stroke:#9198a1; }
+      }
+    </style>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#59636e"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="960" height="560" rx="16"/>
+
+  <text class="t title" x="34" y="46">dsh-plugin-toolkit — architecture</text>
+  <text class="muted sub" x="34" y="70">One package · two halves · seven runtime-toggleable optimizations · zero dsh core changes</text>
+
+  <!-- ── Browser band ─────────────────────────────────────────────── -->
+  <rect class="panel" x="24" y="90" width="912" height="150" rx="12"/>
+  <text class="muted band" x="42" y="114">BROWSER · CLIENT HALF</text>
+  <text class="muted tiny" x="234" y="114">client.js — loaded through the dsh client module table</text>
+
+  <g class="card">
+    <rect x="42"  y="126" width="205" height="44" rx="9"/>
+    <rect x="263" y="126" width="205" height="44" rx="9"/>
+    <rect x="484" y="126" width="205" height="44" rx="9"/>
+    <rect x="705" y="126" width="205" height="44" rx="9"/>
+    <rect x="42"  y="182" width="205" height="44" rx="9"/>
+    <rect x="263" y="182" width="205" height="44" rx="9"/>
+    <rect x="484" y="182" width="205" height="44" rx="9"/>
+  </g>
+
+  <g>
+    <circle class="blue-bg" cx="60" cy="148" r="9"/><text class="t badge" x="56.5" y="152">1</text>
+    <text class="code t" x="78" y="145">workspacelessChat</text><text class="muted tiny" x="78" y="160">chat workspace + auto-connect</text>
+
+    <circle class="blue-bg" cx="281" cy="148" r="9"/><text class="t badge" x="277.5" y="152">2</text>
+    <text class="code t" x="299" y="145">editLastMessage</text><text class="muted tiny" x="299" y="160">inline edit + surface rewind</text>
+
+    <circle class="blue-bg" cx="502" cy="148" r="9"/><text class="t badge" x="498.5" y="152">3</text>
+    <text class="code t" x="520" y="145">viewActivity</text><text class="muted tiny" x="520" y="160">sidebar re-sort overlay</text>
+
+    <circle class="blue-bg" cx="723" cy="148" r="9"/><text class="t badge" x="719.5" y="152">4</text>
+    <text class="code t" x="741" y="145">slashI18n</text><text class="muted tiny" x="741" y="160">remote list rewrite (zh)</text>
+
+    <circle class="blue-bg" cx="60" cy="204" r="9"/><text class="t badge" x="56.5" y="208">5</text>
+    <text class="code t" x="78" y="201">changeReport</text><text class="muted tiny" x="78" y="216">per-turn change card</text>
+
+    <circle class="blue-bg" cx="281" cy="204" r="9"/><text class="t badge" x="277.5" y="208">6</text>
+    <text class="code t" x="299" y="201">opencodeSession</text><text class="muted tiny" x="299" y="216">request header stamp</text>
+
+    <circle class="blue-bg" cx="502" cy="204" r="9"/><text class="t badge" x="498.5" y="208">7</text>
+    <text class="code t" x="520" y="201">modelCapability</text><text class="muted tiny" x="520" y="216">searchable model pickers</text>
+
+    <rect class="card" x="705" y="182" width="205" height="44" rx="9"/>
+    <text class="code t" x="723" y="201">toolkit settings card</text><text class="muted tiny" x="723" y="216">launcher for 1–7</text>
+  </g>
+
+  <!-- browser <-> host arrows -->
+  <path class="arrow" marker-end="url(#ah)" d="M 300 252 L 300 282"/>
+  <path class="arrow" marker-end="url(#ah)" d="M 640 252 L 640 282"/>
+  <text class="muted tiny" x="310" y="272">settings scope (live)</text>
+  <text class="muted tiny" x="650" y="272">transcript · turn tail · remote lists</text>
+
+  <!-- ── Host band ────────────────────────────────────────────────── -->
+  <rect class="panel" x="24" y="284" width="912" height="122" rx="12"/>
+  <text class="muted band" x="42" y="308">DSH HOST · SERVER HALF</text>
+  <text class="muted tiny" x="252" y="308">index.js + model-sync.js — plugin seams only, no core patching</text>
+
+  <g class="card">
+    <rect x="42"  y="320" width="205" height="66" rx="9"/>
+    <rect x="263" y="320" width="205" height="66" rx="9"/>
+    <rect x="484" y="320" width="205" height="66" rx="9"/>
+    <rect x="705" y="320" width="205" height="66" rx="9"/>
+  </g>
+  <g>
+    <text class="lab t" x="58" y="343">Settings namespace</text>
+    <text class="muted tiny" x="58" y="360"><tspan class="code">toolkit</tspan> · schema + defaults</text>
+    <text class="muted tiny" x="58" y="375">read by both halves</text>
+
+    <text class="lab t" x="279" y="343">Chat workspace dir</text>
+    <text class="muted tiny" x="279" y="360">ensures &lt;DSH_HOME&gt;/chat</text>
+    <text class="muted tiny" x="279" y="375">on the host filesystem</text>
+
+    <text class="lab t" x="500" y="343">globalThis.fetch wrap</text>
+    <text class="muted tiny" x="500" y="360">llm/stream → AsyncLocalStorage</text>
+    <text class="muted tiny" x="500" y="375">stamps OpenCode session id</text>
+
+    <text class="lab t" x="721" y="343">Model discovery wrap</text>
+    <text class="muted tiny" x="721" y="360">+ <tspan class="code">/api/toolkit/*</tspan> routes</text>
+    <text class="muted tiny" x="721" y="375">merge · enrich · persist</text>
+  </g>
+
+  <!-- host <-> external arrows -->
+  <path class="arrow" marker-end="url(#ah)" d="M 300 406 L 300 436"/>
+  <path class="arrow" marker-end="url(#ah)" d="M 640 406 L 640 436"/>
+  <text class="muted tiny" x="310" y="426">HTTPS · provider requests</text>
+  <text class="muted tiny" x="650" y="426">HTTPS · probe + registry</text>
+
+  <!-- ── External band ────────────────────────────────────────────── -->
+  <rect class="panel" x="24" y="438" width="912" height="96" rx="12"/>
+  <text class="muted band" x="42" y="462">EXTERNAL</text>
+
+  <g class="card">
+    <rect x="42"  y="472" width="288" height="48" rx="9"/>
+    <rect x="348" y="472" width="264" height="48" rx="9"/>
+    <rect x="630" y="472" width="280" height="48" rx="9"/>
+  </g>
+  <g>
+    <text class="lab t" x="58" y="493">OpenCode Go / Zen API</text>
+    <text class="muted tiny" x="58" y="509">opencode.ai · needs x-opencode-session</text>
+    <text class="lab t" x="364" y="493">models.dev registry</text>
+    <text class="muted tiny" x="364" y="509">context / output / modality metadata</text>
+    <text class="lab t" x="646" y="493">llm-pi-ai route</text>
+    <text class="muted tiny" x="646" y="509">stored model catalog written via its own schema</text>
+  </g>
+
+  <text class="muted tiny" x="34" y="550">Every seam is a public extension surface: settings, llm/stream, model discovery, webServer routes, conversation slots. Disable a toggle and the stock behaviour returns.</text>
+</svg>

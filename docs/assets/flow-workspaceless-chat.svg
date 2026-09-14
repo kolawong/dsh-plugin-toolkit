@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="360" viewBox="0 0 960 360" role="img" aria-labelledby="t d">
+  <title id="t">workspacelessChat — cold-start decision</title>
+  <desc id="d">At cold start the toolkit keeps a no-project chat workspace alive and auto-connects a blank session only when the runtime has no recent workspace to connect.</desc>
+  <defs>
+    <style>
+      .bg{fill:#ffffff;} .panel{fill:#f6f8fa;stroke:#d0d7de;} .card{fill:#ffffff;stroke:#d0d7de;}
+      .t{fill:#1f2328;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",Helvetica,Arial,sans-serif;}
+      .muted{fill:#59636e;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",Helvetica,Arial,sans-serif;}
+      .title{font-size:19px;font-weight:700;} .sub{font-size:12px;}
+      .name{font-size:12.5px;font-weight:600;} .tiny{font-size:11px;}
+      .code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;}
+      .arrow{stroke:#59636e;stroke-width:1.5;fill:none;}
+      .green-bg{fill:#dafbe1;stroke:#4ac26b;} .green{fill:#1a7f37;}
+      .amber-bg{fill:#fff8c5;stroke:#d4a72c;} .amber{fill:#9a6700;}
+      @media (prefers-color-scheme: dark){
+        .bg{fill:#0d1117;} .panel{fill:#161b22;stroke:#30363d;} .card{fill:#1c2128;stroke:#30363d;}
+        .t{fill:#e6edf3;} .muted{fill:#9198a1;}
+        .green-bg{fill:#0f2f1a;stroke:#2ea043;} .green{fill:#3fb950;}
+        .amber-bg{fill:#3a2d04;stroke:#9e6a03;} .amber{fill:#d29922;} .arrow{stroke:#9198a1;}
+      }
+    </style>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#59636e"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="960" height="360" rx="16"/>
+  <text class="t title" x="34" y="46">workspacelessChat — cold-start decision</text>
+  <text class="muted sub" x="34" y="70">The no-project workspace always exists; only the auto-connect is conditional, and the runtime's own recent-workspace policy always wins.</text>
+
+  <rect class="card" x="32" y="104" width="200" height="76" rx="11"/>
+  <text class="t name" x="48" y="134">Cold start</text>
+  <text class="muted tiny" x="48" y="154">page open · no session</text>
+  <text class="muted tiny" x="48" y="170">selected · baselines ready</text>
+
+  <path class="arrow" marker-end="url(#ah)" d="M 234 142 L 258 142"/>
+
+  <rect class="panel" x="262" y="104" width="238" height="76" rx="11"/>
+  <text class="t name" x="278" y="134">Recent workspace to</text>
+  <text class="t name" x="278" y="152">connect by the runtime?</text>
+  <text class="muted tiny" x="278" y="170">the runtime's own startup policy</text>
+
+  <path class="arrow" marker-end="url(#ah)" d="M 502 130 L 526 130"/>
+  <text class="green tiny" x="514" y="120" text-anchor="middle">yes</text>
+  <rect class="green-bg" x="528" y="104" width="400" height="76" rx="11"/>
+  <text class="green name" x="544" y="134">Runtime auto-connects — toolkit does nothing</text>
+  <text class="muted tiny" x="544" y="154">the stock behaviour is never overridden; no blank session is forced</text>
+  <text class="muted tiny" x="544" y="170">first run / no workspaces is the only gap the toolkit fills</text>
+
+  <path class="arrow" marker-end="url(#ah)" d="M 381 180 L 381 216"/>
+  <text class="amber tiny" x="391" y="202">no</text>
+
+  <rect class="amber-bg" x="262" y="220" width="300" height="68" rx="11"/>
+  <text class="amber name" x="278" y="248">Ensure the 通用对话 workspace</text>
+  <text class="muted tiny" x="278" y="266">idempotent · friendly title while it still carries</text>
+  <text class="muted tiny" x="278" y="281">the auto-derived basename (your rename is kept)</text>
+
+  <path class="arrow" marker-end="url(#ah)" d="M 564 254 L 588 254"/>
+
+  <rect class="green-bg" x="590" y="220" width="338" height="68" rx="11"/>
+  <text class="green name" x="606" y="248">Auto-connect a blank session</text>
+  <text class="muted tiny" x="606" y="266">composer is live immediately; failures retry at most</text>
+  <text class="muted tiny" x="606" y="281">3 times (2 s apart) then wait for a list change</text>
+
+  <text class="muted tiny" x="34" y="322">The workspace is created by the server half, idempotently and with its friendly title, whenever the optimization is enabled — so the no-project option is always present.</text>
+  <text class="muted tiny" x="34" y="340">chatWorkspacePath and chatWorkspaceTitle are settings-namespace fields, so path and title edits apply live without a restart.</text>
+</svg>

@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="460" viewBox="0 0 960 460" role="img" aria-labelledby="t d">
+  <title id="t">modelCapability — model-list sync</title>
+  <desc id="d">Live listing, installed catalog, models.dev registry, sibling providers and user overrides feed the pure merge core, which writes the llm-pi-ai route and serves the GUI and API surfaces.</desc>
+  <defs>
+    <style>
+      .bg{fill:#ffffff;} .panel{fill:#f6f8fa;stroke:#d0d7de;} .card{fill:#ffffff;stroke:#d0d7de;}
+      .t{fill:#1f2328;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",Helvetica,Arial,sans-serif;}
+      .muted{fill:#59636e;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",Helvetica,Arial,sans-serif;}
+      .title{font-size:19px;font-weight:700;} .sub{font-size:12px;}
+      .name{font-size:12.5px;font-weight:600;} .tiny{font-size:10.5px;} .lab{font-size:12px;font-weight:700;letter-spacing:.06em;}
+      .code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:10.5px;font-weight:600;}
+      .arrow{stroke:#59636e;stroke-width:1.4;fill:none;}
+      .green-bg{fill:#dafbe1;stroke:#4ac26b;} .green{fill:#1a7f37;}
+      .blue-bg{fill:#ddf4ff;stroke:#54aeff;} .blue{fill:#0969da;}
+      @media (prefers-color-scheme: dark){
+        .bg{fill:#0d1117;} .panel{fill:#161b22;stroke:#30363d;} .card{fill:#1c2128;stroke:#30363d;}
+        .t{fill:#e6edf3;} .muted{fill:#9198a1;}
+        .green-bg{fill:#0f2f1a;stroke:#2ea043;} .green{fill:#3fb950;}
+        .blue-bg{fill:#0c2d6b;stroke:#1f6feb;} .blue{fill:#58a6ff;} .arrow{stroke:#9198a1;}
+      }
+    </style>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#59636e"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="960" height="460" rx="16"/>
+  <text class="t title" x="34" y="46">modelCapability — model-list sync</text>
+  <text class="muted sub" x="34" y="70">Live listing ⊕ installed catalog, enriched from the models.dev registry and sized siblings, then written through llm-pi-ai's own schema.</text>
+
+  <text class="muted lab" x="32" y="98">INPUTS</text>
+
+  <rect class="card" x="32" y="104" width="252" height="48" rx="10"/>
+  <text class="t name" x="46" y="124">Live endpoint listing</text>
+  <text class="muted tiny" x="46" y="140">probed GET /models, OpenAI-shaped</text>
+
+  <rect class="card" x="32" y="158" width="252" height="48" rx="10"/>
+  <text class="t name" x="46" y="178">Installed catalog</text>
+  <text class="muted tiny" x="46" y="194">the route's already-stored rows</text>
+
+  <rect class="card" x="32" y="212" width="252" height="48" rx="10"/>
+  <text class="t name" x="46" y="232">models.dev registry</text>
+  <text class="muted tiny" x="46" y="248">context · output · modality metadata</text>
+
+  <rect class="card" x="32" y="266" width="252" height="48" rx="10"/>
+  <text class="t name" x="46" y="286">Sibling providers</text>
+  <text class="muted tiny" x="46" y="302">image input for the same model id</text>
+
+  <rect class="blue-bg" x="32" y="320" width="252" height="48" rx="10"/>
+  <text class="blue name" x="46" y="340">User overrides</text>
+  <text class="muted tiny" x="46" y="356">forced vision / text-only always win</text>
+
+  <!-- arrows into core -->
+  <g class="arrow">
+    <path marker-end="url(#ah)" d="M 284 128 L 332 196"/>
+    <path marker-end="url(#ah)" d="M 284 182 L 332 216"/>
+    <path marker-end="url(#ah)" d="M 284 236 L 332 240"/>
+    <path marker-end="url(#ah)" d="M 284 290 L 332 268"/>
+    <path marker-end="url(#ah)" d="M 284 344 L 332 304"/>
+  </g>
+
+  <!-- core -->
+  <rect class="panel" x="336" y="140" width="270" height="240" rx="12"/>
+  <text class="t name" x="352" y="168">models-core.js</text>
+  <text class="muted tiny" x="352" y="185">pure · no network · no settings access</text>
+  <g class="code muted">
+    <text x="352" y="214">extractModelIds</text>
+    <text x="352" y="238">mergeModelLists</text>
+    <text x="352" y="262">applyMetadata ← registry</text>
+    <text x="352" y="286">fillFromSiblings</text>
+    <text x="352" y="310">applyCatalogModalities</text>
+    <text x="352" y="334">diffModelIds</text>
+    <text x="352" y="358">applyVisionOverride</text>
+  </g>
+
+  <path class="arrow" marker-end="url(#ah)" d="M 608 260 L 644 260"/>
+
+  <!-- surfaces -->
+  <rect class="panel" x="648" y="104" width="280" height="276" rx="12"/>
+  <text class="muted lab" x="664" y="126">SURFACES</text>
+
+  <rect class="green-bg" x="664" y="136" width="248" height="52" rx="9"/>
+  <text class="green name" x="678" y="157">llm-pi-ai route</text>
+  <text class="muted tiny" x="678" y="175">persisted via the adapter's own schema</text>
+
+  <rect class="card" x="664" y="196" width="248" height="52" rx="9"/>
+  <text class="t name" x="678" y="217">GUI: “fetch available models”</text>
+  <text class="muted tiny" x="678" y="235">discovery wrap merges live over catalog</text>
+
+  <rect class="card" x="664" y="256" width="248" height="52" rx="9"/>
+  <text class="t name" x="678" y="277">GET /api/toolkit/models</text>
+  <text class="muted tiny" x="678" y="295">picker candidates, in-process reads only</text>
+
+  <rect class="card" x="664" y="316" width="248" height="52" rx="9"/>
+  <text class="t name" x="678" y="337">POST /api/toolkit/sync-models</text>
+  <text class="muted tiny" x="678" y="355">explicit sync; API/scripts only</text>
+
+  <text class="muted tiny" x="34" y="410">The discovery answer is tagged <tspan class="code">enrichedByToolkit</tspan>: only a genuinely successful probe counts as a live listing, so a transient failure falls back to the catalog and can never shrink the route.</text>
+  <text class="muted tiny" x="34" y="430">Adopting new models stays in dsh's own model settings (the fetched list is confirmed before writing); the forced-lists picker is mutually exclusive and applies on save without a restart.</text>
+</svg>

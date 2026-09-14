@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="520" viewBox="0 0 960 520" role="img" aria-labelledby="cardTitle cardDesc">
+  <title id="cardTitle">DSH-Toolkit settings card</title>
+  <desc id="cardDesc">Mock of the Toolkit settings card: a header, enable/disable-all buttons, and seven half-width optimization sub-cards, each with an icon, title, on badge and identifier.</desc>
+  <defs>
+    <style>
+      .bg   { fill:#ffffff; }
+      .card { fill:#ffffff; stroke:#d0d7de; }
+      .sub  { fill:#f6f8fa; stroke:#d0d7de; }
+      .t    { fill:#1f2328; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",Helvetica,Arial,sans-serif; }
+      .muted{ fill:#59636e; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",Helvetica,Arial,sans-serif; }
+      .h1   { font-size:15px; font-weight:700; }
+      .name { font-size:12.5px; font-weight:600; }
+      .key  { font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace; font-size:10.5px; font-weight:600; }
+      .tiny { font-size:11px; }
+      .pill { font-size:10.5px; font-weight:700; }
+      .btn  { font-size:10.5px; font-weight:600; }
+      .green-bg { fill:#dafbe1; stroke:#4ac26b; }
+      .green    { fill:#1a7f37; }
+      .ico  { stroke:#59636e; stroke-width:1.5; fill:none; stroke-linecap:round; stroke-linejoin:round; }
+      .div  { stroke:#d0d7de; stroke-width:1; }
+      .soft { fill:#f6f8fa; stroke:#d0d7de; }
+      @media (prefers-color-scheme: dark) {
+        .bg   { fill:#0d1117; }
+        .card { fill:#161b22; stroke:#30363d; }
+        .sub  { fill:#1c2128; stroke:#30363d; }
+        .t    { fill:#e6edf3; }
+        .muted{ fill:#9198a1; }
+        .green-bg { fill:#0f2f1a; stroke:#2ea043; }
+        .green    { fill:#3fb950; }
+        .ico  { stroke:#9198a1; }
+        .div  { stroke:#30363d; }
+        .soft { fill:#1c2128; stroke:#30363d; }
+      }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="960" height="520" rx="16"/>
+
+  <!-- card shell -->
+  <rect class="card" x="110" y="40" width="740" height="430" rx="14"/>
+
+  <!-- header -->
+  <rect class="soft" x="138" y="56" width="28" height="28" rx="8"/>
+  <g class="ico" transform="translate(145,63)">
+    <path d="M4 7l5 2 5-2 5 2v9l-5 2-5-2-5 2z"/>
+    <path d="M9 9v9M14 11v9"/>
+  </g>
+  <text class="t h1" x="178" y="66">DSH-Toolkit</text>
+  <text class="muted tiny" x="178" y="83">Practical small optimizations · 实用小优化集合</text>
+  <rect class="green-bg" x="740" y="58" width="76" height="22" rx="11"/>
+  <text class="green pill" x="778" y="73" text-anchor="middle">7/7 on</text>
+
+  <line class="div" x1="126" y1="102" x2="834" y2="102"/>
+
+  <!-- quick actions -->
+  <rect class="soft" x="698" y="112" width="64" height="24" rx="8"/>
+  <text class="muted btn" x="730" y="128" text-anchor="middle">Enable all</text>
+  <rect class="soft" x="770" y="112" width="64" height="24" rx="8"/>
+  <text class="muted btn" x="802" y="128" text-anchor="middle">Disable all</text>
+
+  <!-- sub-cards -->
+  <g class="sub">
+    <rect x="126" y="156" width="350" height="56" rx="10"/>
+    <rect x="484" y="156" width="350" height="56" rx="10"/>
+    <rect x="126" y="220" width="350" height="56" rx="10"/>
+    <rect x="484" y="220" width="350" height="56" rx="10"/>
+    <rect x="126" y="284" width="350" height="56" rx="10"/>
+    <rect x="484" y="284" width="350" height="56" rx="10"/>
+    <rect x="126" y="348" width="350" height="56" rx="10"/>
+  </g>
+
+  <!-- icon tiles -->
+  <g class="card">
+    <rect x="138" y="168" width="32" height="32" rx="9"/>
+    <rect x="496" y="168" width="32" height="32" rx="9"/>
+    <rect x="138" y="232" width="32" height="32" rx="9"/>
+    <rect x="496" y="232" width="32" height="32" rx="9"/>
+    <rect x="138" y="296" width="32" height="32" rx="9"/>
+    <rect x="496" y="296" width="32" height="32" rx="9"/>
+    <rect x="138" y="360" width="32" height="32" rx="9"/>
+  </g>
+
+  <!-- icons -->
+  <g class="ico" transform="translate(142,172)"><path d="M4 5h16v11H9l-5 4z"/><path d="M12 8v5M9.5 10.5h5"/></g>
+  <g class="ico" transform="translate(500,172)"><path d="M4 20l1.2-4.2L15.5 5.5l3 3L8.2 18.8z"/><path d="M14 7l3 3"/></g>
+  <g class="ico" transform="translate(142,236)"><circle cx="12" cy="12" r="8"/><path d="M12 7.5v5l3.2 2"/></g>
+  <g class="ico" transform="translate(500,236)"><circle cx="12" cy="12" r="8"/><path d="M4 12h16"/><ellipse cx="12" cy="12" rx="4" ry="8"/></g>
+  <g class="ico" transform="translate(142,300)"><circle cx="6.5" cy="5" r="2"/><circle cx="17.5" cy="19" r="2"/><path d="M6.5 7v9.5a2.5 2.5 0 002.5 2.5h6"/></g>
+  <g class="ico" transform="translate(500,300)"><circle cx="8" cy="12" r="4"/><path d="M12 12h8.5M17 12v3M14 12v2"/></g>
+  <g class="ico" transform="translate(142,364)"><path d="M4.5 17.5a8 8 0 1115 0"/><path d="M12 17.5l3.6-4.6"/><circle cx="12" cy="17.5" r="1.3"/></g>
+
+  <!-- titles -->
+  <text class="t name" x="182" y="181">Chat without picking a workspace</text>
+  <text class="t name" x="540" y="181">Edit &amp; resend last message</text>
+  <text class="t name" x="182" y="245">View activity</text>
+  <text class="t name" x="540" y="245">Chinese slash-menu descriptions</text>
+  <text class="t name" x="182" y="309">Change report</text>
+  <text class="t name" x="540" y="309">OpenCode session header</text>
+  <text class="t name" x="182" y="373">Model capability</text>
+
+  <!-- keys -->
+  <text class="muted key" x="182" y="199">workspacelessChat</text>
+  <text class="muted key" x="540" y="199">editLastMessage</text>
+  <text class="muted key" x="182" y="263">viewActivity</text>
+  <text class="muted key" x="540" y="263">slashI18n</text>
+  <text class="muted key" x="182" y="327">changeReport</text>
+  <text class="muted key" x="540" y="327">opencodeSession</text>
+  <text class="muted key" x="182" y="391">modelCapability</text>
+
+  <!-- on badges -->
+  <g class="green-bg">
+    <rect x="430" y="175" width="34" height="18" rx="9"/>
+    <rect x="788" y="175" width="34" height="18" rx="9"/>
+    <rect x="430" y="239" width="34" height="18" rx="9"/>
+    <rect x="788" y="239" width="34" height="18" rx="9"/>
+    <rect x="430" y="303" width="34" height="18" rx="9"/>
+    <rect x="788" y="303" width="34" height="18" rx="9"/>
+    <rect x="430" y="367" width="34" height="18" rx="9"/>
+  </g>
+  <g class="green pill">
+    <text x="447" y="188" text-anchor="middle">On</text>
+    <text x="805" y="188" text-anchor="middle">On</text>
+    <text x="447" y="252" text-anchor="middle">On</text>
+    <text x="805" y="252" text-anchor="middle">On</text>
+    <text x="447" y="316" text-anchor="middle">On</text>
+    <text x="805" y="316" text-anchor="middle">On</text>
+    <text x="447" y="380" text-anchor="middle">On</text>
+  </g>
+
+  <text class="muted tiny" x="480" y="440" text-anchor="middle">Web settings → Plugins → DSH-Toolkit. Click a sub-card to open its dialog; toggles apply live through the toolkit settings scope.</text>
+</svg>
