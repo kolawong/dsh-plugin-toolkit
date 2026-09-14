@@ -37,6 +37,17 @@
  *     upgrade friction (the user-agent requirement is already covered by the
  *     harness's attribution headers).
  *
+ *  7. modelCapability - keeps one llm-pi-ai route's model list current against
+ *     a live OpenAI-compatible endpoint (moved here from
+ *     dsh-plugin-quota-badges' 「模型能力」 section). model-sync.js wraps the
+ *     runtime's model discovery, mounts POST <modelsSyncPath>, merges the live
+ *     listing over the route's stored models, fills capacities from the
+ *     models.dev registry and from sized siblings, borrows image input from
+ *     other registered providers, and applies the user's forced vision /
+ *     text-only overrides. The API key lives in this namespace
+ *     (modelsApiKey / modelsApiKeyEnvVar); the former quota-badges values are
+ *     adopted once at startup.
+ *
  * @license MIT
  */
 
@@ -47,6 +58,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import z from "@deepseek-ai/schemastery";
 import { installSettingsSection, settingsNamespace } from "@deepseek-ai/dsh-settings";
+import { installModelCapability, rehealModelCapability } from "./model-sync.js";
 
 export const name = "toolkit";
 export const inject = ["settings"];
@@ -67,7 +79,8 @@ export const Config = z.object({
     slashI18n: z.boolean().default(true),
     changeReport: z.boolean().default(true),
     opencodeSession: z.boolean().default(true),
-  }).default({ workspacelessChat: true, editLastMessage: true, viewActivity: true, slashI18n: true, changeReport: true, opencodeSession: true }),
+    modelCapability: z.boolean().default(true),
+  }).default({ workspacelessChat: true, editLastMessage: true, viewActivity: true, slashI18n: true, changeReport: true, opencodeSession: true, modelCapability: true }),
   /**
    * Host-side directory the default chat workspace registers. Empty resolves
    * to <DSH_HOME>/chat; resolved before registration so the client always
@@ -80,6 +93,36 @@ export const Config = z.object({
    * workspace picker.
    */
   chatWorkspaceTitle: z.string().default("通用对话"),
+  /**
+   * Explicit API key for the modelCapability probe; empty falls back to the
+   * modelsApiKeyEnvVar environment variable. Adopted once from the former
+   * quota-badges namespace when first empty (see modelsMigratedFromQuotaBadges).
+   */
+  modelsApiKey: z.string().default(""),
+  /** Environment variable consulted when modelsApiKey is empty. */
+  modelsApiKeyEnvVar: z.string().default("OPENCODE_API_KEY"),
+  /** The llm-pi-ai provider route whose model list the optimization keeps current. */
+  modelsRouteKey: z.string().default("opencode-go"),
+  /** Endpoint probed for the live model listing. */
+  modelsBaseURL: z.string().default("https://opencode.ai/zen/go/v1"),
+  /** Wire protocol written onto the route so catalog-unknown models are serviceable. */
+  modelsRouteApi: z.string().default("openai-completions"),
+  /** Same-origin route forcing one model-list sync (POST). */
+  modelsSyncPath: z.string().default("/api/toolkit/sync-models"),
+  /** Same-origin route listing the route's known models for the picker (GET). */
+  modelsPath: z.string().default("/api/toolkit/models"),
+  /** Fill missing capacities/modalities for new models from the models.dev registry. */
+  modelsEnrichFromRegistry: z.boolean().default(true),
+  /** This endpoint's provider directory inside the models.dev registry. */
+  modelsRegistryProvider: z.string().default("opencode-go"),
+  /** Model ids to force vision-capable, overriding any auto-detection. */
+  modelsVision: z.array(z.string()).default([]),
+  /** Model ids to force text-only (image stripped), overriding auto-detection. */
+  modelsTextOnly: z.array(z.string()).default([]),
+  /** Per-request upstream timeout in seconds for the probe and the registry. */
+  modelsTimeoutSec: z.number().default(10),
+  /** One-time marker: the former quota-badges model settings were adopted here. */
+  modelsMigratedFromQuotaBadges: z.boolean().default(false),
 });
 
 /** Composition-layer config as Cordis resolved it at apply time. */
@@ -271,13 +314,28 @@ export function apply(ctx, config) {
     logger?.warn?.("[toolkit] opencodeSession listener registration:", error);
   }
 
+  // modelCapability: own settings namespace fields, the llm-pi-ai discovery
+  // wrap, the saved-model modality healing, and the POST sync-models route.
+  // Dormant (never registered) on a host without the settings/llm/webServer
+  // seams instead of failing the whole toolkit.
+  try {
+    installModelCapability(ctx, currentConfig);
+  } catch (error) {
+    logger?.warn?.("[toolkit] modelCapability install:", error);
+  }
+
   try {
     installSettingsSection(ctx, settingsNamespace(NS), Config, {
       ...pluginConfig,
       chatWorkspacePath: chatPath(pluginConfig),
     }, {
       setSource: (current) => { source = current; },
-      onChange: () => { void ensureChatDir(currentConfig(), logger); },
+      onChange: () => {
+        void ensureChatDir(currentConfig(), logger);
+        // Forced vision / text-only edits apply to the already-stored route
+        // models immediately, without waiting for a restart or a sync.
+        rehealModelCapability();
+      },
     });
   } catch (error) {
     logger?.warn?.("[toolkit] settings registration:", error);

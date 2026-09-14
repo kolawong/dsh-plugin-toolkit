@@ -4,6 +4,9 @@
 # browser half reads the resolved section live through its settings scope.
 # An empty chatWorkspacePath resolves to <DSH_HOME>/chat at load time; the
 # title is the display name of the default no-project chat workspace.
+# The models* rows shape the modelCapability optimization (the moved
+# 「模型能力」 section); modelsApiKey stays empty so the environment variable
+# modelsApiKeyEnvVar wins until the user fills the card in.
 - insert:
     - id: toolkit
       name: 'dsh-plugin-toolkit'
@@ -16,6 +19,19 @@
           viewActivity: true
           slashI18n: true
           changeReport: true
-        opencodeSession: true
+          opencodeSession: true
+          modelCapability: true
         chatWorkspacePath: ''
         chatWorkspaceTitle: '通用对话'
+        modelsApiKey: ''
+        modelsApiKeyEnvVar: OPENCODE_API_KEY
+        modelsRouteKey: opencode-go
+        modelsBaseURL: https://opencode.ai/zen/go/v1
+        modelsRouteApi: openai-completions
+        modelsSyncPath: /api/toolkit/sync-models
+        modelsPath: /api/toolkit/models
+        modelsEnrichFromRegistry: true
+        modelsRegistryProvider: opencode-go
+        modelsVision: []
+        modelsTextOnly: []
+        modelsTimeoutSec: 10

@@ -1,7 +1,9 @@
 /**
  * Offline smoke for the toolkit server half: apply() against a fake cordis
  * context proves the settings namespace registers with a resolved chat path
- * base, and the chat directory gets created. Run: node scripts/smoke.mjs
+ * base, the chat directory gets created, the opencodeSession fetch wrap works,
+ * and the modelCapability feature mounts its sync route. Run:
+ * node scripts/smoke.mjs
  */
 import { mkdtemp, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -18,8 +20,64 @@ const watches = [];
 const listeners = new Map();
 /** Mutable section the fake scope reads through get() (installSettingsSection reads via get). */
 let liveValue = undefined;
+/** Every model-sync route spec the plugin registered. */
+const routes = [];
+/** Cross-namespace writes the modelCapability feature performed. */
+const serviceWrites = [];
+/** Services each ctx.inject call waited on. */
+const injectCalls = [];
+
+/** Registered sections, keyed by namespace (the toolkit's own one included). */
+const sections = new Map();
+/**
+ * Namespaces this plugin does not own but reads/writes through the settings
+ * service: llm-pi-ai is pre-healed (api already set, models empty) so the
+ * startup healing returns immediately instead of polling.
+ */
+const externalNamespaces = {
+  "llm-pi-ai": { providers: { "opencode-go": { api: "openai-completions" } } },
+};
+
+const settingsService = {
+  register: (ns, schema, opts) => {
+    // The real Settings.register resolves the section through the schema
+    // (defaults applied) before handing back a scope; mirror that.
+    liveValue = schema(opts.base);
+    registrations.push({ ns, schema, opts, resolved: liveValue });
+    sections.set(ns, opts.base);
+    return {
+      get: () => liveValue,
+      watch: (fn) => { watches.push(fn); return () => {}; },
+      update: async (patch) => { Object.assign(liveValue, patch); },
+      replace: async (next) => {
+        for (const key of Object.keys(liveValue)) delete liveValue[key];
+        Object.assign(liveValue, next);
+      },
+    };
+  },
+  get: (ns) => externalNamespaces[ns] ?? sections.get(ns),
+  describe: () => [
+    { ns: "llm-pi-ai", user: { providers: { "opencode-go": { models: [] } } } },
+    // The legacy namespace is present with an empty user layer, so the
+    // one-time adoption completes at once instead of waiting for it.
+    { ns: "quota-badges", user: {} },
+  ],
+  update: async (ns, patch) => { serviceWrites.push({ ns, patch }); },
+};
+
+/** The llm runtime face: a registered discovery + one donor provider. */
+const llmService = {
+  discoveries: new Map([["llm-pi-ai", async () => []]]),
+  listProviders: () => [{ id: "opencode-go" }],
+  listModels: async () => [{ id: "deepseek-v4-flash", contextWindow: 1000000 }],
+};
+
+const webServerService = {
+  register: (spec) => { routes.push(spec); return () => {}; },
+};
+
 const ctx = {
-  logger: { warn: (msg) => console.warn("ctx.logger.warn:", msg) },
+  logger: { info: () => {}, warn: (msg) => console.warn("ctx.logger.warn:", msg) },
   on: (name, listener) => {
     const list = listeners.get(name) ?? [];
     list.push(listener);
@@ -31,15 +89,15 @@ const ctx = {
   fiber: { state: 0 },
   effect: (fn) => { fn(); },
   inject: (names, cb) => {
-    equal(JSON.stringify(names), '["settings"]', "inject waits on the settings service");
-    cb(Object.assign({}, ctx, { settings: { register: (ns, schema, opts) => {
-      registrations.push({ ns, schema, opts });
-      liveValue = opts.base;
-      return {
-        get: () => liveValue,
-        watch: (fn) => { watches.push(fn); return () => {}; },
-      };
-    } } }));
+    injectCalls.push(names);
+    const child = {
+      ...ctx,
+      settings: settingsService,
+      llm: llmService,
+      webServer: webServerService,
+      effect: (fn) => { fn(); },
+    };
+    cb(child);
   },
 };
 
@@ -47,16 +105,44 @@ const mod = await import("../index.js");
 equal(mod.name, "toolkit", "plugin name");
 
 // A recording fake fetch must be in place BEFORE apply(): the opencodeSession
-// wrap captures whatever globalThis.fetch holds at install time.
+// wrap captures whatever globalThis.fetch holds at install time, and the
+// modelCapability sync probes through it.
 const fetchCalls = [];
 globalThis.fetch = async (input, init) => {
+  const url = typeof input === "string" ? input : String(input?.url ?? input);
   fetchCalls.push({ input, init });
+  if (url.endsWith("/models")) {
+    return new Response(JSON.stringify({ data: [{ id: "alpha" }, { id: "deepseek-v4-flash" }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  if (url.includes("models.dev")) return new Response("not found", { status: 404 });
   return new Response("{}", { status: 200 });
 };
 equal(mod.inject.join(","), "settings", "server inject");
 ok(mod.Config, "Config schema exported");
 
-mod.apply(ctx, { optimizations: { workspacelessChat: true, editLastMessage: true, viewActivity: true, slashI18n: true, changeReport: true, opencodeSession: true }, chatWorkspacePath: "", chatWorkspaceTitle: "通用对话" });
+mod.apply(ctx, {
+  optimizations: {
+    workspacelessChat: true,
+    editLastMessage: true,
+    viewActivity: true,
+    slashI18n: true,
+    changeReport: true,
+    opencodeSession: true,
+    modelCapability: true,
+  },
+  chatWorkspacePath: "",
+  chatWorkspaceTitle: "通用对话",
+  modelsApiKey: "sk-smoke-test",
+});
+
+// The modelCapability half waits on its own services, and the settings section
+// keeps waiting on settings alone.
+equal(injectCalls.length, 2, "two inject waits: model capability + settings section");
+equal(injectCalls[0].join(","), "settings,llm,webServer", "modelCapability waits on settings+llm+webServer");
+equal(injectCalls[1].join(","), "settings", "settings section waits on settings");
 
 equal(registrations.length, 1, "one namespace registration");
 equal(registrations[0].ns, "toolkit", "namespace key equals the card key");
@@ -66,6 +152,12 @@ equal(registrations[0].opts.base.optimizations.editLastMessage, true, "base carr
 equal(registrations[0].opts.base.optimizations.viewActivity, true, "base carries the viewActivity toggle");
 equal(registrations[0].opts.base.optimizations.slashI18n, true, "base carries the slashI18n toggle");
 equal(registrations[0].opts.base.optimizations.changeReport, true, "base carries the changeReport toggle");
+equal(registrations[0].opts.base.optimizations.opencodeSession, true, "base carries the opencodeSession toggle");
+equal(registrations[0].opts.base.optimizations.modelCapability, true, "base carries the modelCapability toggle");
+equal(registrations[0].resolved.modelsRouteKey, "opencode-go", "resolved section carries the model route key");
+equal(registrations[0].resolved.modelsSyncPath, "/api/toolkit/sync-models", "resolved section carries the sync route");
+equal(registrations[0].resolved.modelsPath, "/api/toolkit/models", "resolved section carries the picker route");
+equal(registrations[0].resolved.modelsMigratedFromQuotaBadges, false, "migration marker starts false");
 equal(registrations[0].opts.base.chatWorkspaceTitle, "通用对话", "base carries the friendly chat title");
 
 // apply() kicks the directory creation asynchronously; wait for it.
@@ -89,6 +181,65 @@ liveValue = { ...liveValue, chatWorkspacePath: nextDir };
 watches[0]();
 await new Promise((resolve) => setTimeout(resolve, 50));
 ok((await stat(nextDir)).isDirectory(), "watch mkdirs the edited path");
+
+// ── modelCapability: sync route + discovery enrichment ──────────────────────
+const syncRoute = routes.find((spec) => spec.path === "/api/toolkit/sync-models");
+ok(syncRoute, "POST /api/toolkit/sync-models is mounted");
+equal(syncRoute.kind, "exact", "sync route is exact-kind");
+equal(typeof llmService.discoveries.get("llm-pi-ai"), "function", "discovery stays a function after the wrap");
+equal(llmService.discoveries.get("llm-pi-ai").enrichedByToolkit, true, "discovery is marked as toolkit-enriched");
+
+/** Drive one sync request through the mounted route handler. */
+async function postSync() {
+  let body = "";
+  const res = {
+    writeHead() {},
+    end(chunk) { body = chunk; },
+  };
+  await syncRoute.handler({ method: "POST" }, res);
+  return JSON.parse(body);
+}
+
+const sync = await postSync();
+equal(sync.ok, true, "sync succeeds against the fake endpoint");
+equal(sync.total, 2, "sync reports the merged model count");
+ok(sync.added.includes("alpha"), "a newly listed model is reported as added");
+const write = serviceWrites.find((entry) => entry.ns === "llm-pi-ai" && entry.patch?.providers?.["opencode-go"]?.models);
+ok(write, "sync persists into the llm-pi-ai namespace");
+equal(write.patch.providers["opencode-go"].api, "openai-completions", "sync also stamps the route api");
+ok(
+  write.patch.providers["opencode-go"].models.some((model) => model.id === "deepseek-v4-flash" && model.contextWindow === 1000000),
+  "stored catalog metadata survives the merge",
+);
+
+let methodStatus = 0;
+await syncRoute.handler({ method: "GET" }, { writeHead(code) { methodStatus = code; }, end() {} });
+equal(methodStatus, 405, "non-POST on the sync route is rejected");
+
+// ── modelCapability: the picker's GET models route ──────────────────────────
+const modelsRoute = routes.find((spec) => spec.path === "/api/toolkit/models");
+ok(modelsRoute, "GET /api/toolkit/models is mounted");
+equal(modelsRoute.kind, "exact", "models route is exact-kind");
+
+async function getModels(method = "GET") {
+  let body = "";
+  const res = { writeHead() {}, end(chunk) { body = chunk; } };
+  await modelsRoute.handler({ method }, res);
+  return JSON.parse(body);
+}
+
+const listing = await getModels();
+equal(listing.ok, true, "the models route answers ok");
+equal(listing.routeKey, "opencode-go", "the models route names the route it describes");
+ok(listing.count >= 1, "the models route lists at least the runtime's model");
+ok(
+  listing.models.some((model) => model.id === "deepseek-v4-flash"),
+  "the models route includes the runtime model listing",
+);
+ok(Array.isArray(listing.forcedVision) && Array.isArray(listing.forcedTextOnly), "the payload echoes the overrides");
+let modelsStatus = 0;
+await modelsRoute.handler({ method: "POST" }, { writeHead(code) { modelsStatus = code; }, end() {} });
+equal(modelsStatus, 405, "non-GET on the models route is rejected");
 
 // ── opencodeSession: the llm/stream listener + global fetch wrap ────────────
 const streamListeners = listeners.get("llm/stream") ?? [];

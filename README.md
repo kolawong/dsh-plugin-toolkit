@@ -96,6 +96,36 @@ How it works, and its bounds:
 |---|---|---|
 | `optimizations.opencodeSession` | `true` | Stable per-conversation `x-opencode-session` header on OpenCode Go/Zen requests. |
 
+### `modelCapability` (default on, moved from `dsh-plugin-quota-badges`)
+
+Keeps one llm-pi-ai route's model list (default `opencode-go`) current against the endpoint's live listing: newly served models become selectable immediately, with no restart; missing context/output limits are filled from the [models.dev](https://models.dev) registry and from sized siblings; image input is borrowed from any other registered provider that declares the same id multimodal; and a model can be forced vision-capable or text-only. This was the 「模型能力」 section of `dsh-plugin-quota-badges` and now lives here in full — the other plugin no longer ships it.
+
+How it works, and its bounds:
+
+- **Discovery wrap**: wraps the runtime's llm-pi-ai model discovery so the GUI's "fetch available models" answers with the live listing merged over the installed catalog instead of the catalog alone. The wrap is tagged `enrichedByToolkit`: only an answer whose probe really succeeded counts as a live listing for the sync route, so a transient probe failure falls back to the catalog and can never shrink the stored route. There is **no "sync model list" button on the card**: adopting new models happens in dsh's own model settings (click "fetch available models"; the list is yours to confirm before it is written), so nothing dumps the whole live listing into the route by accident. The server route that does it — `POST /api/toolkit/sync-models` — stays registered and only runs when explicitly called (API/scripts).
+- **Searchable model pickers**: the forced vision / text-only fields are no longer comma-separated id boxes. Each is a type-to-filter picker over the route's known models — click a candidate to add it as a chip, click the chip's × to drop it, press Enter to add an id the list does not know, Backspace to delete the last chip. Candidates come from `GET /api/toolkit/models` (the route's stored rows ∪ the runtime's `listModels`, deduped and sorted, in-process reads only — no network) and are fetched once per dialog open: it only reads the configured models and changes nothing. The two lists are mutually exclusive: adding to one removes the id from the other.
+- **Startup healing**: pre-writes the route's wire protocol (`api`) so the configuration surface's own save passes serviceability too, and heals image input on already-saved models (that save path sends no `input` field). Edits to the forced vision / text-only lists apply to the stored models at once — no restart, no re-sync.
+- **One-way migration**: on first start with an empty `modelsApiKey`, the former `quota-badges` namespace donates its OpenCode key, forced vision / text-only lists, and route shape; the migration marker lands in the same write, so clearing the key afterwards is never re-filled.
+- Dormant — not broken — on a host without the settings / llm / webServer seams, and everything stays inside this package: no dsh source changes.
+
+| Config | Default | Meaning |
+|---|---|---|
+| `optimizations.modelCapability` | `true` | Master switch for the discovery wrap, sync route, and capability healing. |
+| `modelsApiKey` | `""` | OpenCode API key; empty falls back to the environment variable. |
+| `modelsApiKeyEnvVar` | `OPENCODE_API_KEY` | Environment variable consulted when the key is empty. |
+| `modelsRouteKey` | `opencode-go` | The llm-pi-ai route kept current. |
+| `modelsBaseURL` | `https://opencode.ai/zen/go/v1` | Endpoint probed for the live model listing. |
+| `modelsRouteApi` | `openai-completions` | Wire protocol pre-written onto the route. |
+| `modelsSyncPath` | `/api/toolkit/sync-models` | Same-origin explicit-sync route (no card entry point; API/scripts only; changing it needs a restart). |
+| `modelsPath` | `/api/toolkit/models` | Same-origin route listing the picker's candidates (changing it needs a restart). |
+| `modelsEnrichFromRegistry` | `true` | Fill missing capacities/modalities from the models.dev registry. |
+| `modelsRegistryProvider` | `opencode-go` | Provider directory inside the models.dev registry. |
+| `modelsVision` | `[]` | Model ids forced to accept image input. |
+| `modelsTextOnly` | `[]` | Model ids forced to drop image input. |
+| `modelsTimeoutSec` | `10` | Probe and registry request timeout in seconds. |
+
+> Note: this optimization carries a server route and its own config fields, so it already meets the graduation rule above; it deliberately stays in the Toolkit for now as one numbered optimization.
+
 ## Install (web profile)
 
 ```sh

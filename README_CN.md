@@ -96,6 +96,36 @@ OpenCode Go 现在会对缺少 `x-opencode-session` 请求头的请求返回 400
 |---|---|---|
 | `optimizations.opencodeSession` | `true` | 为 OpenCode Go/Zen 请求发送每对话稳定的 `x-opencode-session` 请求头。 |
 
+### `modelCapability`（默认开启，自 `dsh-plugin-quota-badges` 迁入）
+
+把 llm-pi-ai 某个路由（默认 `opencode-go`）的模型清单与端点实时清单保持同步：端点新增的模型立即出现在选择器中、无需重启；缺失的上下文/输出上限由 [models.dev](https://models.dev) 注册表与同族模型补全；图像输入按其他已注册 provider 的同 id 声明借用；还可以强制某个模型支持或不支持图像。本项原为 `dsh-plugin-quota-badges` 的「模型能力」分区，现整体迁入 Toolkit，原插件不再包含该功能。
+
+工作方式与边界：
+
+- **发现包装**：包装运行时的 llm-pi-ai 模型发现，让 GUI 的「获取可用模型」返回「实时清单 ⊕ 已安装目录」的并集，而不是只有目录。包装带 `enrichedByToolkit` 标记：只有真正 probe 成功的答案才会被同步路由当作实时清单，探测失败回退目录，绝不会把已存路由写瘦。**卡片上没有「同步模型列表」按钮**：模型清单的更新走 dsh 自己的模型设置（点「获取可用模型」，清单由你确认后写入），避免一键把实时清单整体灌进路由；同一个动作的服务端路由 `POST /api/toolkit/sync-models` 仍然注册，只在被显式调用时生效（API/脚本用）。
+- **可搜索的模型选择器**：强制视觉 / 强制纯文本不再是逗号分隔的 id 文本框，而是按 id 或名称即时过滤的下拉选择器：点击候选加入为 chip、chip 上的 × 取消、输入框里回车可把候选外的 id 直接加入，Backspace 删除最后一个 chip。候选来自 `GET /api/toolkit/models`（该路由的 stored 条目 ∪ 运行时 listModels，按 id 去重排序，纯进程内读取、不发网络请求），弹窗每次打开时拉取一次——它只读当前已配置的模型，不改动任何东西。两个列表互斥：加入视觉会自动从纯文本移除，反之亦然。
+- **启动修复**：给路由预写 wire protocol（`api`），让配置界面自身的保存也能通过服务性校验；并修复已存模型缺失的图像输入（配置界面保存时不带 `input` 字段）。强制视觉/纯文本列表一改动就立即作用于已存模型，无需重启或再同步。
+- **一次性迁移**：首次启动时若 `modelsApiKey` 为空，会从旧的 `quota-badges` 命名空间取用原 OpenCode Key、强制视觉/纯文本列表与路由形状；迁移标记与数据同一次写入，之后即使清空 Key 也不会被回填。
+- 主机缺少 settings / llm / webServer 任一面时本项静默休眠，不影响其它优化；所有逻辑都在本包内，不改 dsh 源码。
+
+| 配置 | 默认 | 含义 |
+|---|---|---|
+| `optimizations.modelCapability` | `true` | 模型能力（发现包装 + 同步路由 + 能力修正）总开关。 |
+| `modelsApiKey` | `""` | OpenCode API Key；留空回退环境变量。 |
+| `modelsApiKeyEnvVar` | `OPENCODE_API_KEY` | 未填 Key 时读取的环境变量。 |
+| `modelsRouteKey` | `opencode-go` | 保持最新的 llm-pi-ai 路由。 |
+| `modelsBaseURL` | `https://opencode.ai/zen/go/v1` | 探测实时模型清单的端点。 |
+| `modelsRouteApi` | `openai-completions` | 预写到路由上的 wire protocol。 |
+| `modelsSyncPath` | `/api/toolkit/sync-models` | 显式同步的 same-origin 路由（卡片上没有入口，仅供 API/脚本；改动需重启）。 |
+| `modelsPath` | `/api/toolkit/models` | 选择器候选模型的 same-origin 路由（改动需重启）。 |
+| `modelsEnrichFromRegistry` | `true` | 是否用 models.dev 注册表补全缺失容量/模态。 |
+| `modelsRegistryProvider` | `opencode-go` | models.dev 中对应的 provider 目录名。 |
+| `modelsVision` | `[]` | 强制支持图像输入的模型 id。 |
+| `modelsTextOnly` | `[]` | 强制去掉图像输入的模型 id。 |
+| `modelsTimeoutSec` | `10` | 探测与注册表请求的超时（秒）。 |
+
+> 说明：本项含服务端路由与独立配置字段，按上面的「毕业规则」已达到可拆出的体量；当前有意保留在 Toolkit 内，作为编号优化项统一管理。
+
 ## 安装（web profile）
 
 ```sh

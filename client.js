@@ -21,15 +21,20 @@ window.__ModuleLoader__.load({
   factory: (require) => {
     const exports = {};
     const React = require("react");
-    const { useState, useEffect, useRef } = React;
+    const { useState, useEffect, useLayoutEffect, useRef } = React;
     const { jsx, jsxs } = require("react/jsx-runtime");
     const {
       Modal, IconChevronDownOutline14, projectUserText, JsonBlock,
       IconCopyOutline16, IconCheckOutline16, Tooltip,
+      FileTypeIcon, fileExtension, fileSizeText,
       IconPersonalizationOutline16, IconNewChatOutline16, IconEditOutline16,
       IconClockOutline16, IconGlobeOutline14, diffTotals,
       IconBranchOutline16, IconApiOutline14,
+      IconGaugeOutline16,
     } = require("@deepseek-ai/dsh-client-ui-primitives");
+
+    /** Fallback model route; the live value comes from the settings section. */
+    const MODELS_PATH = "/api/toolkit/models";
 
     function ClockIcon() {
       return jsx("svg", {
@@ -81,7 +86,8 @@ window.__ModuleLoader__.load({
           clock === "start" ? clockEl : null,
           extraActions,
           text !== undefined ? jsx(Tooltip, {
-            content: copied ? (t ? t("msgCopied") : "已复制") : (t ? t("msgCopy") : "复制"),
+            label: copied ? (t ? t("msgCopied") : "已复制") : (t ? t("msgCopy") : "复制"),
+            side: "bottom",
             children: jsx("button", {
               type: "button",
               onClick: copy,
@@ -174,6 +180,30 @@ window.__ModuleLoader__.load({
       optSessionShort: "为 OpenCode Go 请求补上 x-opencode-session",
       optSessionDesc:
         "OpenCode Go 要求每个请求携带 x-opencode-session（每段对话一个稳定会话 ID），缺失会被 400 拒绝。开启后，发往 opencode.ai（Go/Zen）的请求会自动带上当前对话的会话 ID，用于服务端路由与提示词缓存。100% 插件侧实现，不改 dsh 源码、不影响一键升级；User-Agent 已由 dsh 自身标识满足。",
+      optModelsTitle: "模型能力",
+      optModelsShort: "同步模型清单、补全上下文与图像能力",
+      optModelsDesc:
+        "把端点实时的模型清单与已安装目录合并后写入 dsh 的 llm-pi-ai 路由：新增模型立即出现在选择器中、无需重启。缺失的上下文/输出上限由 models.dev 注册表与同族模型补全；图像输入按其他已注册 provider 的同 id 声明借用；也可在此强制某个模型支持或不支持图像。",
+      modelsKeyLabel: "OpenCode API Key",
+      modelsKeyPlaceholder: "粘贴 opencode.ai 的 API Key",
+      modelsKeyHint: "留空时回退读取环境变量 {env}",
+      modelsInfoTitle: "模型清单与能力",
+      modelsInfoDesc:
+        "候选来自该路由（{route}）当前已配置的模型，保存后立即生效。要新增模型请到 dsh 自己的模型设置里点「获取可用模型」：本插件把该动作接到了实时端点，拉到的清单由你确认后再写入目录。",
+      modelsVisionLabel: "强制视觉模型",
+      modelsVisionHint: "从该路由的已知模型里搜索选择；加入视觉会自动从纯文本里移除，保存后立即生效。",
+      modelsTextOnlyLabel: "强制纯文本模型",
+      modelsTextOnlyHint: "从该路由的已知模型里搜索选择；加入纯文本会自动从视觉里移除，保存后立即生效。",
+      modelsPickSearch: "搜索模型 id 或名称…",
+      modelsPickLoading: "正在加载模型列表…",
+      modelsPickFailed: "模型列表加载失败：{message}",
+      modelsPickUnavailable: "模型列表加载器未注入（插件接线有问题）",
+      modelsPickEmpty: "没有匹配的模型",
+      modelsPickNoOptions: "该路由暂无已配置的模型：请到 dsh 的模型设置里添加，或直接输入 id 后回车加入。",
+      modelsPickAddFree: "回车把 “{id}” 直接加入",
+      modelsPickRemove: "移除 {id}",
+      modelsPickCount: "已选 {count}",
+      modelsSave: "保存",
       reportTitle: "已编辑 {count} 个文件",
       reportTitleOne: "已编辑 1 个文件",
       reportMore: "再显示 {count} 个文件",
@@ -240,6 +270,30 @@ window.__ModuleLoader__.load({
       optSessionShort: "Send x-opencode-session on OpenCode Go requests",
       optSessionDesc:
         "OpenCode Go requires x-opencode-session on every request (one stable session id per conversation) and 400-rejects requests without it. When enabled, requests served by opencode.ai (Go/Zen) endpoints automatically carry the current conversation's session id, which the server uses for routing and prompt caching. 100% plugin-side: no dsh source changes, no upgrade friction; the user-agent requirement is already satisfied by dsh's own attribution headers.",
+      optModelsTitle: "Model capability",
+      optModelsShort: "Sync the model list, capacities and image support",
+      optModelsDesc:
+        "Merge the endpoint's live model listing over the installed catalog and write it into the dsh llm-pi-ai route: new models become selectable immediately, with no restart. Missing context/output limits are filled from the models.dev registry and from sized siblings; image input is borrowed from any other registered provider that declares the same id multimodal, and a model can be forced vision-capable or text-only here.",
+      modelsKeyLabel: "OpenCode API key",
+      modelsKeyPlaceholder: "Paste your opencode.ai API key",
+      modelsKeyHint: "Empty falls back to the {env} environment variable",
+      modelsInfoTitle: "Model list and capabilities",
+      modelsInfoDesc:
+        "Candidates are the models already configured on this route ({route}); changes apply on save. To adopt new models, use \"fetch available models\" in dsh's own model settings — this plugin wires that action to the live endpoint, and the fetched list is yours to confirm before it is written.",
+      modelsVisionLabel: "Force vision models",
+      modelsVisionHint: "Search and pick from the route's known models; adding one here removes it from text-only. Applies on save.",
+      modelsTextOnlyLabel: "Force text-only models",
+      modelsTextOnlyHint: "Search and pick from the route's known models; adding one here removes it from vision. Applies on save.",
+      modelsPickSearch: "Search model id or name…",
+      modelsPickLoading: "Loading model list…",
+      modelsPickFailed: "Could not load the model list: {message}",
+      modelsPickUnavailable: "Model-list loader was not injected (plugin wiring bug)",
+      modelsPickEmpty: "No matching model",
+      modelsPickNoOptions: "This route has no configured model yet — add one in dsh's model settings, or type an id and press Enter.",
+      modelsPickAddFree: "Press Enter to add “{id}”",
+      modelsPickRemove: "Remove {id}",
+      modelsPickCount: "{count} selected",
+      modelsSave: "Save",
       reportTitle: "{count} files edited",
       reportTitleOne: "1 file edited",
       reportMore: "Show {count} more files",
@@ -256,13 +310,15 @@ window.__ModuleLoader__.load({
     function userTextOf(content) {
       let text = "";
       const images = [];
+      const files = [];
       const rest = [];
       for (const block of content || []) {
         if (block?.type === "text" && typeof block.text === "string") text += block.text;
         else if (block?.type === "image" && block.attachment !== undefined) images.push({ attachment: block.attachment });
+        else if (block?.type === "file" && block.attachment !== undefined) files.push(block.attachment);
         else rest.push(block);
       }
-      return { text, images, rest };
+      return { text, images, files, rest };
     }
 
     /**
@@ -277,18 +333,20 @@ window.__ModuleLoader__.load({
       const { node, renderMessageImages, t, useChat, sessionId, editLast } = props;
       const data = node.data;
       const enabled = editLast?.isEnabled?.() !== false;
-      const { text, images, rest } = userTextOf(data.content);
+      const { text, images, files, rest } = userTextOf(data.content);
       const refs = data.referenceLabels ?? [];
+      const skillNames = data.skillNames ?? [];
       const truncated = (total) => t("msgTruncated", { total });
       const showBubble = text !== "" || rest.length > 0;
-      // Only the LAST user message offers the edit action.
+      // Only the LAST user message offers the edit action. Walk the order from
+      // the tail and stop at the first user node: scanning every node here runs
+      // once per user bubble on every store change (O(messages²) per update).
       const tailSeq = useChat((snapshot) => {
-        let last = -1;
-        for (const key of snapshot.order) {
-          const candidate = snapshot.nodes.get(key);
-          if (candidate?.kind === "user" && candidate.data.seq > last) last = candidate.data.seq;
+        for (let index = snapshot.order.length - 1; index >= 0; index -= 1) {
+          const candidate = snapshot.nodes.get(snapshot.order[index]);
+          if (candidate?.kind === "user") return candidate.data.seq;
         }
-        return last;
+        return -1;
       });
       const isTail = enabled && tailSeq === data.seq && text !== "";
 
@@ -465,10 +523,36 @@ window.__ModuleLoader__.load({
             style: bubbleColumnStyle,
             children: [
               renderMessageImages({ images, align: "end" }),
+              files.length > 0 ? jsx("div", {
+                style: { display: "flex", flexWrap: "wrap", gap: "6px", justifyContent: "flex-end" },
+                children: files.map((file, index) => jsxs("span", {
+                  key: "file:" + index,
+                  title: file.name,
+                  style: {
+                    display: "inline-flex", alignItems: "center", gap: "6px",
+                    maxWidth: "100%", padding: "4px 8px", borderRadius: "8px",
+                    fontSize: "12px", color: "var(--dsw-alias-label-secondary, #d1d5db)",
+                    background: "var(--dsw-alias-bg-layer-2, #1e1e1e)",
+                    border: "1px solid var(--dsw-alias-border-l2, #333)",
+                  },
+                  children: [
+                    jsx(FileTypeIcon, { path: file.name }),
+                    jsx("span", {
+                      style: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+                      children: file.name,
+                    }),
+                    jsx("span", {
+                      style: { color: "var(--dsw-alias-label-tertiary, #9ca3af)" },
+                      children: [fileExtension(file.name).toUpperCase().slice(0, 8), fileSizeText(file.bytes)]
+                        .filter(Boolean).join(" "),
+                    }),
+                  ],
+                }, "file:" + index)),
+              }) : null,
               showBubble ? jsx("div", {
                 style: bubbleStyle,
                 children: [
-                  projectUserText(text, refs),
+                  projectUserText(text, refs, skillNames, "skill"),
                   ...rest.map((block, index) => jsx(JsonBlock, {
                     key: index,
                     label: t("msgExtraBlock"),
@@ -514,7 +598,15 @@ window.__ModuleLoader__.load({
         return () => {};
       }
 
-      let active = localStorage.getItem("dsh:activity-view-active") === "true";
+      const readStored = (key, fallback) => {
+        try { const stored = localStorage.getItem(key); return stored === null ? fallback : stored; }
+        catch { return fallback; }
+      };
+      const writeStored = (key, value) => {
+        try { localStorage.setItem(key, value); } catch { /* private mode / no storage */ }
+      };
+
+      let active = readStored("dsh:activity-view-active", "false") === "true";
       let disposed = false;
       let treeDirty = true;
       let syncScheduled = false;
@@ -540,6 +632,13 @@ window.__ModuleLoader__.load({
 
       const pad = (n) => String(n).padStart(2, "0");
 
+      /** Local-midnight start of the calendar day containing a timestamp. */
+      const dayStartOf = (ts) => {
+        const day = new Date(ts);
+        day.setHours(0, 0, 0, 0);
+        return day.getTime();
+      };
+
       const formatTime = (ts) => {
         if (!ts) return "";
         const now = Date.now();
@@ -547,14 +646,16 @@ window.__ModuleLoader__.load({
         const diffMin = Math.floor(diffMs / 60000);
         if (diffMin < 1) return "刚刚";
         if (diffMin < 60) return `${diffMin}分钟前`;
-        const diffHours = Math.floor(diffMs / 3600000);
         const d = new Date(ts);
-        const today = new Date(now);
-        if (d.getDate() === today.getDate() && diffHours < 24) {
+        const dayStart = dayStartOf(ts);
+        const todayStart = dayStartOf(now);
+        const diffHours = Math.floor(diffMs / 3600000);
+        if (dayStart === todayStart && diffHours < 24) {
           return `${diffHours}小时前`;
         }
-        const yesterday = new Date(now - 86400000);
-        if (d.getDate() === yesterday.getDate()) {
+        const yesterday = new Date(todayStart);
+        yesterday.setDate(yesterday.getDate() - 1);
+        if (dayStart === yesterday.getTime()) {
           return `昨天 ${pad(d.getHours())}:${pad(d.getMinutes())}`;
         }
         return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
@@ -736,7 +837,7 @@ window.__ModuleLoader__.load({
                 e.preventDefault();
                 e.stopPropagation();
                 active = !active;
-                localStorage.setItem("dsh:activity-view-active", String(active));
+                writeStored("dsh:activity-view-active", String(active));
                 treeDirty = true;
                 syncView();
               };
@@ -800,11 +901,16 @@ window.__ModuleLoader__.load({
         scheduleSync();
       });
 
+      // The observer must notice our nodes being evicted by a sidebar
+      // re-render, but its callback runs on EVERY DOM mutation in the app. Keep
+      // it to two O(1) id lookups; the expensive `[class*="_listArea"]` query
+      // belongs in syncView, which is already rAF-throttled.
       const observer = new MutationObserver(() => {
-        const btnMissing = !document.getElementById("tk-activity-btn");
-        const listArea = document.querySelector('[class*="_listArea"]');
-        const treeMissing = active && listArea && !document.getElementById("tk-activity-tree");
-        if (btnMissing || treeMissing) {
+        if (document.getElementById("tk-activity-btn") === null) {
+          scheduleSync();
+          return;
+        }
+        if (active && document.getElementById("tk-activity-tree") === null) {
           scheduleSync();
         }
       });
@@ -1157,12 +1263,13 @@ window.__ModuleLoader__.load({
           // can join this fold (set here, where the routed turn is known).
           const callId = String(match.event.data.callId);
           if (callId !== "") reportRootCallTurns.set(callId, state.turn);
-          const calls = new Map(state.calls);
-          calls.set(
+          // `calls` is private fold state (only `hunks` is published), so mutate
+          // it in place instead of copying the whole map on every call (O(n²)).
+          state.calls.set(
             callId,
             reportMutationFromArgs(match.event.data.name, match.event.data.arguments),
           );
-          return { ...state, calls };
+          return state;
         }
         if (match.event.type === "tool/code-dispatch") {
           // A settled nested sub-call: the event itself carries name,
@@ -1212,6 +1319,11 @@ window.__ModuleLoader__.load({
       return snap?.status === "ready" ? snap.value?.optimizations?.changeReport !== false : true;
     }
 
+    /** Per-hunk diff totals; a hunk object is immutable once folded. */
+    const reportHunkTotals = new WeakMap();
+    /** Last selector answer: repeated evaluations with the same inputs are free. */
+    let selectTurnChangesCache = { hunks: null, seq: null, result: null, valid: false };
+
     /**
      * Chain selector: accept a turn whose settled mutations exist, returning
      * the aggregated per-file model for the card. Reads only the owner props
@@ -1223,8 +1335,16 @@ window.__ModuleLoader__.load({
       if (!changeReportEnabled()) return null;
       const stored = owner.turn?.data?.get?.(REPORT_DATA_KEY);
       const hunks = Array.isArray(stored?.hunks) ? stored.hunks : [];
+      if (selectTurnChangesCache.valid
+        && selectTurnChangesCache.hunks === hunks
+        && selectTurnChangesCache.seq === owner.seq) {
+        return selectTurnChangesCache.result;
+      }
       const settled = hunks.filter((hunk) => hunk.seq <= owner.seq);
-      if (settled.length === 0) return null;
+      if (settled.length === 0) {
+        selectTurnChangesCache = { hunks, seq: owner.seq, result: null, valid: true };
+        return null;
+      }
       const files = [];
       const byPath = new Map();
       let added = 0;
@@ -1236,14 +1356,20 @@ window.__ModuleLoader__.load({
           byPath.set(hunk.path, file);
           files.push(file);
         }
-        const part = diffTotals([{ path: hunk.path, oldText: hunk.oldText, newText: hunk.newText }]);
+        let part = reportHunkTotals.get(hunk);
+        if (part === undefined) {
+          part = diffTotals([{ path: hunk.path, oldText: hunk.oldText, newText: hunk.newText }]);
+          reportHunkTotals.set(hunk, part);
+        }
         file.added += part.added;
         file.removed += part.removed;
-        file.hunks.push({ path: hunk.path, oldText: hunk.oldText, newText: hunk.newText });
+        file.hunks.push(hunk);
         added += part.added;
         removed += part.removed;
       }
-      return { files, added, removed };
+      const result = { files, added, removed };
+      selectTurnChangesCache = { hunks, seq: owner.seq, result, valid: true };
+      return result;
     }
 
     /**
@@ -1368,6 +1494,13 @@ window.__ModuleLoader__.load({
         shortKey: "optSessionShort",
         descKey: "optSessionDesc",
         icon: IconApiOutline14,
+      },
+      {
+        key: "modelCapability",
+        titleKey: "optModelsTitle",
+        shortKey: "optModelsShort",
+        descKey: "optModelsDesc",
+        icon: IconGaugeOutline16,
       },
     ];
 
@@ -1520,6 +1653,288 @@ window.__ModuleLoader__.load({
       };
     }
 
+    // ── modelCapability: searchable model-id picker ───────────────────────────
+
+    /** Shared styles for the model-id picker fields. */
+    const MKP = {
+      label: { fontSize: "13.5px", fontWeight: 500, color: "var(--dsw-alias-label-primary, #f3f4f6)" },
+      hint: { fontSize: "12px", lineHeight: 1.5, color: "var(--dsw-alias-label-tertiary, #9ca3af)" },
+      count: { flexShrink: 0, fontSize: "11.5px", color: "var(--dsw-alias-label-tertiary, #9ca3af)" },
+      box: {
+        position: "relative",
+        display: "flex", flexWrap: "wrap", alignItems: "center", gap: "4px",
+        marginTop: "4px", padding: "5px 8px",
+        minHeight: "34px", boxSizing: "border-box",
+        background: "var(--dsw-alias-bg-layer-1, #161616)",
+        border: "1px solid var(--dsw-alias-border-l2, #333)",
+        borderRadius: "8px", cursor: "text",
+      },
+      chip: {
+        display: "inline-flex", alignItems: "center", gap: "4px", maxWidth: "100%",
+        padding: "1px 4px 1px 8px", borderRadius: "999px",
+        fontSize: "12px", lineHeight: 1.7,
+        color: "var(--dsw-alias-label-primary, #f3f4f6)",
+        background: "var(--dsw-alias-bg-layer-3, #242424)",
+        border: "1px solid var(--dsw-alias-border-l2, #333)",
+      },
+      chipText: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+      chipRemove: {
+        flexShrink: 0, display: "inline-flex", alignItems: "center", justifyContent: "center",
+        width: "16px", height: "16px", padding: 0, borderRadius: "50%",
+        font: "inherit", fontSize: "13px", lineHeight: 1,
+        color: "var(--dsw-alias-label-tertiary, #9ca3af)",
+        background: "transparent", border: "none", cursor: "pointer",
+      },
+      input: {
+        flex: "1 1 140px", minWidth: "120px",
+        padding: "2px 0", fontSize: "12.5px", font: "inherit",
+        color: "var(--dsw-alias-label-primary, #f3f4f6)",
+        background: "transparent", border: "none", outline: "none",
+      },
+      panel: {
+        // Floating overlay: absolutely positioned against the field box so the
+        // dialog never grows or re-centers when the suggestions open. The
+        // dialog's own overflow is switched to visible next to this rule.
+        position: "absolute", left: 0, right: 0, zIndex: 5,
+        overflowY: "auto", overscrollBehavior: "contain",
+        background: "var(--dsw-alias-bg-layer-2, #1e1e1e)",
+        border: "1px solid var(--dsw-alias-border-l2, #333)",
+        borderRadius: "8px",
+        boxShadow: "0 12px 32px rgba(0, 0, 0, 0.45)",
+      },
+      row: {
+        display: "flex", alignItems: "baseline", gap: "8px", width: "100%",
+        padding: "6px 10px", boxSizing: "border-box",
+        appearance: "none", border: 0, background: "none",
+        font: "inherit", textAlign: "left", cursor: "pointer",
+      },
+      rowActive: { background: "var(--dsw-alias-bg-layer-3, #242424)" },
+      rowId: { fontSize: "12.5px", color: "var(--dsw-alias-label-primary, #f3f4f6)" },
+      rowName: {
+        fontSize: "11.5px", color: "var(--dsw-alias-label-tertiary, #9ca3af)",
+        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+      },
+      empty: {
+        padding: "8px 10px", fontSize: "12px", lineHeight: 1.5,
+        color: "var(--dsw-alias-label-tertiary, #9ca3af)",
+      },
+    };
+
+    /**
+     * modelCapability model-id picker: a search-as-you-type token field. The
+     * current selection renders as removable chips; typing filters the route's
+     * known model ids and clicking a row (or Enter on the highlighted one) adds
+     * it. Enter with no match adds the raw id, Backspace on an empty query
+     * drops the last chip, and Escape closes the suggestion list before the
+     * surrounding modal sees it.
+     */
+    function ModelIdPicker(props) {
+      const {
+        t, label, hint, values, options, optionsError, disabled,
+        query, onQuery, open, onOpen, onAdd, onRemove,
+      } = props;
+      const [highlight, setHighlight] = useState(0);
+      /** Where the overlay fits: below the field, or flipped above it. */
+      const [placement, setPlacement] = useState({ side: "down", maxHeight: 240 });
+      const wrapRef = useRef(null);
+      const boxRef = useRef(null);
+      const inputRef = useRef(null);
+
+      const trimmed = query.trim();
+      const lowered = trimmed.toLowerCase();
+      const chosen = new Set(values);
+      const matches = [];
+      if (Array.isArray(options)) {
+        for (const option of options) {
+          if (option === null || typeof option?.id !== "string" || chosen.has(option.id)) continue;
+          if (
+            lowered === ""
+            || option.id.toLowerCase().includes(lowered)
+            || String(option.name ?? "").toLowerCase().includes(lowered)
+          ) {
+            matches.push(option);
+            if (matches.length >= 50) break;
+          }
+        }
+      }
+      const freeAdd = trimmed !== "" && !chosen.has(trimmed) && !matches.some((option) => option.id === trimmed);
+
+      // Close on any pointer press outside this field.
+      useEffect(() => {
+        if (!open) return undefined;
+        const onPointerDown = (event) => {
+          if (wrapRef.current && !wrapRef.current.contains(event.target)) onOpen(false);
+        };
+        document.addEventListener("pointerdown", onPointerDown);
+        return () => document.removeEventListener("pointerdown", onPointerDown);
+      }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+      // Keep the overlay inside the viewport: prefer below the field, flip
+      // above when the lower half is too tight, and bound its height by the
+      // room actually available. Re-measured on scroll/resize while open.
+      useLayoutEffect(() => {
+        if (!open) return undefined;
+        const measure = () => {
+          const box = boxRef.current;
+          if (box === null || typeof window === "undefined") return;
+          const rect = box.getBoundingClientRect();
+          const below = window.innerHeight - rect.bottom - 12;
+          const above = rect.top - 12;
+          // Prefer the conventional downward panel, but only when the full
+          // overlay fits below; otherwise use whichever side has more room
+          // (both pickers sit low in this dialog, so they open upward with a
+          // full-height list rather than a cramped strip at the screen edge).
+          const side = below >= 240 || below >= above ? "down" : "up";
+          const room = Math.max(side === "down" ? below : above, 96);
+          setPlacement({ side, maxHeight: Math.min(260, Math.round(room)) });
+        };
+        measure();
+        const onViewportChange = () => measure();
+        window.addEventListener("resize", onViewportChange);
+        // Capture phase: also catches the dialog's own scrolling ancestors.
+        window.addEventListener("scroll", onViewportChange, true);
+        return () => {
+          window.removeEventListener("resize", onViewportChange);
+          window.removeEventListener("scroll", onViewportChange, true);
+        };
+      }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+      // Keep the highlight inside the (re-filtered) match list.
+      useEffect(() => {
+        if (highlight >= matches.length) setHighlight(0);
+      }, [highlight, matches.length]);
+
+      const pick = (id) => {
+        onAdd(id);
+        onQuery("");
+        setHighlight(0);
+        inputRef.current?.focus();
+      };
+
+      const onKeyDown = (event) => {
+        if (disabled) return;
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          if (!open) { onOpen(true); return; }
+          setHighlight((current) => (matches.length === 0 ? 0 : Math.min(current + 1, matches.length - 1)));
+        } else if (event.key === "ArrowUp") {
+          event.preventDefault();
+          setHighlight((current) => Math.max(current - 1, 0));
+        } else if (event.key === "Enter") {
+          event.preventDefault();
+          const target = matches[highlight]?.id ?? (freeAdd ? trimmed : undefined);
+          if (target !== undefined) pick(target);
+        } else if (event.key === "Backspace" && query === "" && values.length > 0) {
+          onRemove(values[values.length - 1]);
+        } else if (event.key === "Escape" && open) {
+          // Close the suggestions first; a second Escape reaches the modal.
+          event.stopPropagation();
+          onOpen(false);
+        }
+      };
+
+      let panel = null;
+      if (open) {
+        let content;
+        if (optionsError !== null) {
+          // Already a display string (built with t() where the failure was seen).
+          content = jsx("div", { style: MKP.empty, children: optionsError });
+        } else if (options === null) {
+          content = jsx("div", { style: MKP.empty, children: t("modelsPickLoading") });
+        } else if (matches.length > 0) {
+          content = matches.map((option, index) => jsx("button", {
+            type: "button",
+            onMouseEnter: () => setHighlight(index),
+            onClick: () => pick(option.id),
+            style: { ...MKP.row, ...(index === highlight ? MKP.rowActive : {}) },
+            children: [
+              jsx("span", { style: MKP.rowId, children: option.id }),
+              option.name !== undefined && option.name !== ""
+                ? jsx("span", { style: MKP.rowName, children: option.name })
+                : null,
+            ],
+          }, option.id));
+        } else if (freeAdd) {
+          content = jsx("div", { style: MKP.empty, children: t("modelsPickAddFree", { id: trimmed }) });
+        } else if (trimmed !== "") {
+          content = jsx("div", { style: MKP.empty, children: t("modelsPickEmpty") });
+        } else {
+          content = jsx("div", { style: MKP.empty, children: t("modelsPickNoOptions") });
+        }
+        panel = jsx("div", {
+          style: {
+            ...MKP.panel,
+            top: placement.side === "down" ? "calc(100% + 4px)" : undefined,
+            bottom: placement.side === "up" ? "calc(100% + 4px)" : undefined,
+            maxHeight: `${placement.maxHeight}px`,
+          },
+          children: content,
+        });
+      }
+
+      return jsxs("div", {
+        ref: wrapRef,
+        style: { display: "flex", flexDirection: "column", gap: "3px" },
+        children: [
+          jsxs("div", {
+            style: { display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: "8px" },
+            children: [
+              jsx("span", { style: MKP.label, children: label }),
+              values.length > 0
+                ? jsx("span", { style: MKP.count, children: t("modelsPickCount", { count: values.length }) })
+                : null,
+            ],
+          }),
+          jsxs("div", {
+            ref: boxRef,
+            style: { ...MKP.box, opacity: disabled ? 0.5 : 1 },
+            onClick: () => {
+              if (disabled) return;
+              inputRef.current?.focus();
+              onOpen(true);
+            },
+            children: [
+              ...values.map((id) => jsxs("span", {
+                style: MKP.chip,
+                children: [
+                  jsx("span", { style: MKP.chipText, children: id }),
+                  jsx("button", {
+                    type: "button",
+                    disabled,
+                    "aria-label": t("modelsPickRemove", { id }),
+                    title: t("modelsPickRemove", { id }),
+                    onClick: (event) => { event.stopPropagation(); onRemove(id); },
+                    style: MKP.chipRemove,
+                    children: "×",
+                  }),
+                ],
+              }, id)),
+              jsx("input", {
+                ref: inputRef,
+                value: query,
+                disabled,
+                spellCheck: false,
+                autoComplete: "off",
+                placeholder: values.length === 0 ? t("modelsPickSearch") : "",
+                onFocus: () => onOpen(true),
+                onChange: (event) => {
+                  onQuery(event.target.value);
+                  onOpen(true);
+                  setHighlight(0);
+                },
+                onKeyDown,
+                style: MKP.input,
+              }),
+              // The overlay lives inside the field box: the dialog never grows,
+              // and a pointer press on a row still counts as "inside".
+              panel,
+            ],
+          }),
+          jsx("span", { style: MKP.hint, children: hint }),
+        ],
+      });
+    }
+
     // ── settings card ─────────────────────────────────────────────────────────
 
     /**
@@ -1531,7 +1946,7 @@ window.__ModuleLoader__.load({
      * as the optimization list grows.
      */
     function ToolkitSettingsCard(props) {
-      const { t, useToolkitSettings, toolkitSet } = props;
+      const { t, useToolkitSettings, toolkitSet, toolkitMutate, toolkitModels } = props;
       const snap = typeof useToolkitSettings === 'function' ? useToolkitSettings((s) => s) : (typeof props.scope?.getSnapshot === 'function' ? props.scope.getSnapshot() : {});
       const value = snap.value ?? {};
       const writable = snap.writable === true;
@@ -1545,12 +1960,75 @@ window.__ModuleLoader__.load({
       const [pathDraft, setPathDraft] = useState("");
       const [pathDirty, setPathDirty] = useState(false);
       const pathInput = useRef(null);
+      /** modelCapability fields: key + forced vision / text-only selections. */
+      const [modelsKeyDraft, setModelsKeyDraft] = useState("");
+      const [modelsVisionDraft, setModelsVisionDraft] = useState([]);
+      const [modelsTextOnlyDraft, setModelsTextOnlyDraft] = useState([]);
+      const [modelsDirty, setModelsDirty] = useState(false);
+      /** Model-id picker: per-field search text, which field is open, and the
+       *  route's known models (null while loading). */
+      const [visionQuery, setVisionQuery] = useState("");
+      const [textOnlyQuery, setTextOnlyQuery] = useState("");
+      const [pickerFor, setPickerFor] = useState(null);
+      const [modelOptions, setModelOptions] = useState(null);
+      const [modelOptionsError, setModelOptionsError] = useState(null);
+
+      // The "saved" badge is transient feedback, like the copy check.
+      useEffect(() => {
+        if (!savedTick) return undefined;
+        const timer = setTimeout(() => { setSavedTick(false); }, 1500);
+        return () => { clearTimeout(timer); };
+      }, [savedTick]);
 
       // Sync the directory draft from the live value until the user edits it.
       useEffect(() => {
         if (pathDirty) return;
         setPathDraft(typeof value.chatWorkspacePath === "string" ? value.chatWorkspacePath : "");
       }, [value.chatWorkspacePath, pathDirty]);
+
+      // Same contract for the model fields: the live section wins until the
+      // user starts editing, then the draft is authoritative.
+      useEffect(() => {
+        if (modelsDirty) return;
+        setModelsKeyDraft(typeof value.modelsApiKey === "string" ? value.modelsApiKey : "");
+        setModelsVisionDraft(Array.isArray(value.modelsVision) ? [...value.modelsVision] : []);
+        setModelsTextOnlyDraft(Array.isArray(value.modelsTextOnly) ? [...value.modelsTextOnly] : []);
+      }, [value.modelsApiKey, value.modelsVision, value.modelsTextOnly, modelsDirty]);
+
+      // Load the picker's candidates when the modelCapability modal opens.
+      // Offline in-process read on the server; failure just leaves free-form
+      // entry working.
+      useEffect(() => {
+        if (modalOpt !== "modelCapability") {
+          setModelOptions(null);
+          setModelOptionsError(null);
+          setPickerFor(null);
+          return undefined;
+        }
+        let cancelled = false;
+        setModelOptionsError(null);
+        void (async () => {
+          // A missing loader is a wiring bug, never "this route has no
+          // models": say so instead of silently rendering an empty list.
+          if (typeof toolkitModels !== "function") {
+            if (!cancelled) {
+              setModelOptions([]);
+              setModelOptionsError(t("modelsPickUnavailable"));
+            }
+            return;
+          }
+          try {
+            const result = await toolkitModels();
+            if (!cancelled) setModelOptions(Array.isArray(result?.models) ? result.models : []);
+          } catch (cause) {
+            if (!cancelled) {
+              setModelOptions([]);
+              setModelOptionsError(t("modelsPickFailed", { message: cause?.message ?? String(cause) }));
+            }
+          }
+        })();
+        return () => { cancelled = true; };
+      }, [modalOpt]); // eslint-disable-line react-hooks/exhaustive-deps
 
       const write = async (field, next) => {
         setSaving(true);
@@ -1576,6 +2054,63 @@ window.__ModuleLoader__.load({
       const savePath = () => {
         setPathDirty(false);
         void write("chatWorkspacePath", pathDraft.trim());
+      };
+
+      /**
+       * Add / remove one model id in either override list. The two lists are
+       * mutually exclusive — the server lets vision win anyway, and keeping
+       * them disjoint makes the chips readable.
+       */
+      const addVisionId = (id) => {
+        setModelsVisionDraft((current) => (current.includes(id) ? current : [...current, id]));
+        setModelsTextOnlyDraft((current) => current.filter((entry) => entry !== id));
+        setModelsDirty(true);
+      };
+      const removeVisionId = (id) => {
+        setModelsVisionDraft((current) => current.filter((entry) => entry !== id));
+        setModelsDirty(true);
+      };
+      const addTextOnlyId = (id) => {
+        setModelsTextOnlyDraft((current) => (current.includes(id) ? current : [...current, id]));
+        setModelsVisionDraft((current) => current.filter((entry) => entry !== id));
+        setModelsDirty(true);
+      };
+      const removeTextOnlyId = (id) => {
+        setModelsTextOnlyDraft((current) => current.filter((entry) => entry !== id));
+        setModelsDirty(true);
+      };
+
+      /** Persist only the model fields the user actually changed. */
+      const saveModels = () => {
+        setModelsDirty(false);
+        void (async () => {
+          setSaving(true);
+          setError(null);
+          try {
+            const key = modelsKeyDraft.trim();
+            const wantsKey = key !== (value.modelsApiKey ?? "");
+            const wantsVision = JSON.stringify(modelsVisionDraft) !== JSON.stringify(value.modelsVision ?? []);
+            const wantsTextOnly = JSON.stringify(modelsTextOnlyDraft) !== JSON.stringify(value.modelsTextOnly ?? []);
+            // Prefer one atomic namespace mutation over a write per field; a
+            // host without `mutate` falls back to the ordered single writes.
+            if (typeof toolkitMutate === "function") {
+              const ops = [];
+              if (wantsKey) ops.push({ op: "set", path: ["modelsApiKey"], value: key });
+              if (wantsVision) ops.push({ op: "set", path: ["modelsVision"], value: modelsVisionDraft });
+              if (wantsTextOnly) ops.push({ op: "set", path: ["modelsTextOnly"], value: modelsTextOnlyDraft });
+              if (ops.length > 0) await toolkitMutate(ops);
+            } else {
+              if (wantsKey) await toolkitSet("modelsApiKey", key);
+              if (wantsVision) await toolkitSet("modelsVision", modelsVisionDraft);
+              if (wantsTextOnly) await toolkitSet("modelsTextOnly", modelsTextOnlyDraft);
+            }
+            setSavedTick(true);
+          } catch (cause) {
+            setError(cause?.message ?? String(cause));
+          } finally {
+            setSaving(false);
+          }
+        })();
       };
 
       const enabledCount = OPTIMIZATIONS.filter((opt) => opts[opt.key] === true).length;
@@ -1713,10 +2248,128 @@ window.__ModuleLoader__.load({
         ],
       });
 
+      /** Shared text styles for the model-capability group. */
+      const modelsLabelStyle = {
+        fontSize: "13.5px", fontWeight: 500,
+        color: "var(--dsw-alias-label-primary, #f3f4f6)",
+      };
+      const modelsHintStyle = {
+        fontSize: "12px", lineHeight: 1.5,
+        color: "var(--dsw-alias-label-tertiary, #9ca3af)",
+      };
+      const modelsInputStyle = {
+        width: "100%", boxSizing: "border-box",
+        marginTop: "4px", padding: "6px 10px",
+        fontSize: "12.5px", font: "inherit",
+        color: "var(--dsw-alias-label-primary, #f3f4f6)",
+        background: "var(--dsw-alias-bg-layer-1, #161616)",
+        border: "1px solid var(--dsw-alias-border-l2, #333)",
+        borderRadius: "8px",
+      };
+      const modelsButtonStyle = {
+        padding: "6px 14px", borderRadius: "8px",
+        fontSize: "12.5px", font: "inherit", cursor: "pointer",
+        color: "var(--dsw-alias-label-primary-inverted, #fff)",
+        background: "var(--dsw-alias-brand-primary, #2563eb)",
+        border: "1px solid transparent",
+      };
+
+      /** A labelled model-capability input row (label, input, hint). */
+      const modelsField = (label, hint, props) => jsxs("label", {
+        style: { display: "flex", flexDirection: "column", gap: "3px" },
+        children: [
+          jsx("span", { style: modelsLabelStyle, children: label }),
+          jsx("input", {
+            spellCheck: false,
+            autoComplete: "off",
+            disabled: !writable || saving,
+            ...props,
+            style: { ...modelsInputStyle, opacity: writable ? 1 : 0.5 },
+          }),
+          jsx("span", { style: modelsHintStyle, children: hint }),
+        ],
+      });
+
+      /** The modelCapability group: sync button, API key, capability overrides. */
+      const modelsGroup = jsxs("div", {
+        style: {
+          display: "flex", flexDirection: "column", gap: "10px",
+          padding: "10px 16px 14px",
+          borderTop: "1px solid var(--dsw-alias-border-l2, #333)",
+        },
+        children: [
+          jsxs("div", {
+            style: { display: "flex", flexDirection: "column", gap: "3px" },
+            children: [
+              jsx("span", { style: modelsLabelStyle, children: t("modelsInfoTitle") }),
+              jsx("span", {
+                style: modelsHintStyle,
+                children: t("modelsInfoDesc", { route: value.modelsRouteKey || "opencode-go" }),
+              }),
+            ],
+          }),
+          modelsField(t("modelsKeyLabel"), t("modelsKeyHint", {
+            env: value.modelsApiKeyEnvVar || "OPENCODE_API_KEY",
+          }), {
+            type: "password",
+            placeholder: t("modelsKeyPlaceholder"),
+            value: modelsKeyDraft,
+            onChange: (event) => {
+              setModelsKeyDraft(event.target.value);
+              setModelsDirty(true);
+            },
+          }),
+          jsx(ModelIdPicker, {
+            t,
+            label: t("modelsVisionLabel"),
+            hint: t("modelsVisionHint"),
+            values: modelsVisionDraft,
+            options: modelOptions,
+            optionsError: modelOptionsError,
+            disabled: !writable || saving,
+            query: visionQuery,
+            onQuery: setVisionQuery,
+            open: pickerFor === "vision",
+            onOpen: (next) => setPickerFor(next ? "vision" : null),
+            onAdd: addVisionId,
+            onRemove: removeVisionId,
+          }, "vision"),
+          jsx(ModelIdPicker, {
+            t,
+            label: t("modelsTextOnlyLabel"),
+            hint: t("modelsTextOnlyHint"),
+            values: modelsTextOnlyDraft,
+            options: modelOptions,
+            optionsError: modelOptionsError,
+            disabled: !writable || saving,
+            query: textOnlyQuery,
+            onQuery: setTextOnlyQuery,
+            open: pickerFor === "textOnly",
+            onOpen: (next) => setPickerFor(next ? "textOnly" : null),
+            onAdd: addTextOnlyId,
+            onRemove: removeTextOnlyId,
+          }, "textOnly"),
+          jsx("div", {
+            style: { display: "flex", justifyContent: "flex-end" },
+            children: jsx("button", {
+              type: "button",
+              disabled: !writable || !modelsDirty || saving,
+              onClick: saveModels,
+              style: {
+                ...modelsButtonStyle,
+                opacity: writable && modelsDirty && !saving ? 1 : 0.5,
+              },
+              children: t("modelsSave"),
+            }),
+          }),
+        ],
+      });
+
       /** One optimization's modal body: its switch plus option-specific fields. */
       const settingsFor = (opt) => [
         switchRow(opt),
         ...(opt.key === "workspacelessChat" ? [chatPathGroup] : []),
+        ...(opt.key === "modelCapability" ? [modelsGroup] : []),
         ...(error !== null ? [jsx("div", {
           style: {
             padding: "0 16px 12px",
@@ -1732,7 +2385,7 @@ window.__ModuleLoader__.load({
         const on = opts[opt.key] === true;
         return jsx("button", {
           type: "button",
-          onClick: () => { setModalOpt(opt.key); },
+          onClick: () => { setError(null); setModalOpt(opt.key); },
           "aria-label": t(opt.titleKey),
           style: {
             width: "calc(50% - 4px)", boxSizing: "border-box",
@@ -1980,9 +2633,12 @@ window.__ModuleLoader__.load({
       const style = document.createElement("style");
       style.id = "tk-styles";
       style.textContent = `
-        /* Widen the Toolkit settings modal beyond the shared 380px dialog. */
+        /* Widen the Toolkit settings modal beyond the shared 380px dialog, and
+           let the model-id pickers' overlays escape the card instead of being
+           clipped by the dialog's own overflow: hidden. */
         .tk-modal.width {
           width: min(560px, calc(100vw - 32px)) !important;
+          overflow: visible !important;
         }
         /* Change report: the markdown code-block container recipe —
            markdown-code-block background, 12px radius, banner row on the
@@ -2032,22 +2688,24 @@ window.__ModuleLoader__.load({
           flex-shrink: 0;
         }
 
-        /* Activity View Toggle Button in Sidebar Header */
+        /* Activity View Toggle Button in Sidebar Header — mirrors the native
+           .iconButton geometry (28x28 circle, 16px glyph) so it sits
+           indistinguishably in the header action cluster. */
         .tk-activity-btn {
           flex: none;
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          width: 24px;
-          height: 24px;
+          width: 28px;
+          height: 28px;
           border: none;
-          border-radius: 6px;
+          border-radius: 50%;
+          corner-shape: round;
           padding: 0;
           background: transparent;
           cursor: pointer;
-          color: var(--dsw-alias-label-tertiary, #81858c);
+          color: var(--dsw-alias-label-secondary, #a7acb5);
           transition: all 150ms ease;
-          margin-right: 4px;
         }
         .tk-activity-btn:hover {
           color: var(--dsw-alias-label-primary, #f3f4f6);
@@ -2056,6 +2714,30 @@ window.__ModuleLoader__.load({
         .tk-activity-btn.active {
           color: var(--dsw-alias-state-business-primary, #3b82f6);
           background: var(--dsw-alias-interactive-bg-active, rgba(59, 130, 246, 0.12));
+        }
+
+        /* Collapsed rail: the 56px rail fits exactly one 36px control per row,
+           so the activity button joins the rail rhythm — 36x36 box with an
+           18px glyph, vertically stacked with the native add control (12px
+           gap) on the same center axis as the shell's rail icons. */
+        [class*="_rail"] [class*="_sectionHeader"] {
+          height: auto;
+        }
+        [class*="_rail"] [class*="_headerActions"] {
+          flex-direction: column;
+          gap: 12px;
+        }
+        [class*="_rail"] .tk-activity-btn {
+          width: 36px;
+          height: 36px;
+          color: var(--dsw-alias-label-primary, #f3f4f6);
+        }
+        [class*="_rail"] .tk-activity-btn svg {
+          width: 18px;
+          height: 18px;
+        }
+        [class*="_rail"] .tk-activity-btn.active {
+          color: var(--dsw-alias-state-business-primary, #3b82f6);
         }
 
         /* Activity View Tree */
@@ -2339,6 +3021,22 @@ window.__ModuleLoader__.load({
               inject: () => ({
                 hooks: { toolkitSettings: scope },
                 toolkitSet: (field, value) => scope.set(field, value),
+                // Atomic multi-field write when the host scope exposes mutate().
+                toolkitMutate: typeof scope.mutate === "function"
+                  ? (ops) => scope.mutate(ops)
+                  : undefined,
+                toolkitModels: async () => {
+                  // The route is configurable server-side (modelsPath); read the
+                  // resolved value live and fall back to the shipped default.
+                  const snap = scope.getSnapshot?.();
+                  const configured = snap?.status === "ready" ? snap.value?.modelsPath : undefined;
+                  const path = typeof configured === "string" && configured !== ""
+                    ? configured
+                    : MODELS_PATH;
+                  const response = await fetch(path);
+                  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                  return response.json();
+                },
               }),
             },
             ToolkitSettingsCard,
