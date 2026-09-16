@@ -35,6 +35,9 @@ const ReactStub = {
   useLayoutEffect(fn) { hookState.pending.push(fn); },
   useCallback(fn) { return fn; },
   useRef() { return { current: undefined }; },
+  // No reconciler here, so memo is an identity wrapper; the tests render the
+  // component directly.
+  memo(component) { return component; },
 };
 
 function resetHooks() {

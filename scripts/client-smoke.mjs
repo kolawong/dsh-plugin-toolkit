@@ -59,7 +59,13 @@ const fakePrimitives = {
 await import("../client.js");
 ok(factory, "client factory registered through __ModuleLoader__");
 const exports = factory((name) => (name === "react"
-  ? { useState: () => [undefined, () => {}], useEffect: () => {}, useRef: () => ({ current: null }) }
+  ? {
+    useState: () => [undefined, () => {}],
+    useEffect: () => {},
+    useLayoutEffect: () => {},
+    useRef: () => ({ current: null }),
+    memo: (component) => component,
+  }
   : name === "react/jsx-runtime"
     ? { jsx: () => null, jsxs: () => null }
     : fakePrimitives));
@@ -86,7 +92,13 @@ const ctx = {
     inject: (name, gen) => { slotInjects.push({ name, gen }); const it = gen(); it.next(); },
     register: (options, component) => { registeredSlots.push({ options, component }); return {}; },
   },
-  effect: () => () => {},
+  // Cordis runs an effect's callback immediately and keeps its return value as
+  // the disposer. Ignoring the callback (as this stub used to) silently skipped
+  // every installer that is now registered through ctx.effect.
+  effect: (fn) => {
+    const dispose = fn();
+    return () => { if (typeof dispose === "function") dispose(); };
+  },
   on: () => () => {},
   inject: (names, cb) => { injected.push({ names, cb }); },
 };

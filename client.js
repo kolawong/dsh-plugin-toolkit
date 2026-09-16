@@ -12,8 +12,9 @@
  *
  *  2. A settings card on the Web plugins page (slot `settings.plugin.item`,
  *     key `toolkit` - must equal the server-registered settings namespace).
- *     Clicking the card opens a modal listing every optimization with a live
- *     on/off toggle.
+ *     Clicking the card EXPANDS it into one half-width sub-card per
+ *     optimization; each sub-card carries its own toggle and, for the ones
+ *     that have options, a settings dialog of its own.
  */
 
 window.__ModuleLoader__.load({
@@ -21,7 +22,7 @@ window.__ModuleLoader__.load({
   factory: (require) => {
     const exports = {};
     const React = require("react");
-    const { useState, useEffect, useLayoutEffect, useRef } = React;
+    const { useState, useEffect, useLayoutEffect, useRef, memo } = React;
     const { jsx, jsxs } = require("react/jsx-runtime");
     const {
       Modal, IconChevronDownOutline14, projectUserText, JsonBlock,
@@ -51,8 +52,15 @@ window.__ModuleLoader__.load({
       const [copied, setCopied] = useState(false);
       const copy = () => {
         if (text === undefined) return;
-        void navigator.clipboard.writeText(text);
-        setCopied(true);
+        // Feature-detect: `navigator.clipboard` is undefined outside a secure
+        // context, and a denied write rejects (Safari/Firefox permissions).
+        // Either way the button must not claim a copy that did not happen.
+        const clipboard = globalThis.navigator?.clipboard;
+        if (typeof clipboard?.writeText !== "function") return;
+        clipboard.writeText(text).then(
+          () => { setCopied(true); },
+          (error) => { console.warn("[toolkit] clipboard write failed:", error); },
+        );
       };
       useEffect(() => {
         if (!copied) return;
@@ -132,7 +140,7 @@ window.__ModuleLoader__.load({
       statusSaved: "已保存",
       statusReadOnly: "设置只读（Host 文档不可写）",
       statusMemory: "设置仅保存在本进程内存",
-      statusEmpty: "",
+      statusLoading: "正在读取设置…",
       optChatTitle: "免选工作区对话",
       optChatShort: "打开即可对话，无需先选工作区",
       optChatDesc:
@@ -144,7 +152,6 @@ window.__ModuleLoader__.load({
       toggleOn: "已开启",
       toggleOff: "已关闭",
       saveError: "保存失败",
-      noOptimizations: "暂无优化项",
       optEditTitle: "编辑上一条并重发",
       optEditShort: "改上一条消息，重新发送",
       optEditDesc:
@@ -168,6 +175,20 @@ window.__ModuleLoader__.load({
       optActivityDesc:
         "在工作区侧栏添加一个「活动」图标：点击后侧栏会话列表就地重排——运行中的对话置于顶部「优先级」组，其余按 今天/昨天/星期X/更早 分组；再点一次恢复原分组。",
       activityOpen: "查看活动",
+      activityBtnActive: "按工作区分组查看",
+      activityBtnInactive: "会话活动视图（按时间 / 进行中分组）",
+      activityPriority: "进行中",
+      activityToday: "今天",
+      activityYesterday: "昨天",
+      activityEarlier: "更早",
+      activityEmpty: "暂无会话",
+      activityRunning: "正在运行",
+      activityDone: "已完成",
+      activityNewSession: "新会话",
+      activityJustNow: "刚刚",
+      activityMinutesAgo: "{n} 分钟前",
+      activityHoursAgo: "{n} 小时前",
+      activityYesterdayAt: "昨天 {time}",
       optI18nTitle: "斜杠菜单中文描述",
       optI18nShort: "/ 菜单的命令与技能描述显示中文",
       optI18nDesc:
@@ -222,7 +243,7 @@ window.__ModuleLoader__.load({
       statusSaved: "Saved",
       statusReadOnly: "Settings read-only (host document not writable)",
       statusMemory: "Settings kept in local memory only",
-      statusEmpty: "",
+      statusLoading: "Loading settings…",
       optChatTitle: "Chat without picking a workspace",
       optChatShort: "Chat right away without picking a workspace",
       optChatDesc:
@@ -234,7 +255,6 @@ window.__ModuleLoader__.load({
       toggleOn: "On",
       toggleOff: "Off",
       saveError: "Save failed",
-      noOptimizations: "No optimizations yet",
       optEditTitle: "Edit & resend last message",
       optEditShort: "Edit the last message and send again",
       optEditDesc:
@@ -258,6 +278,20 @@ window.__ModuleLoader__.load({
       optActivityDesc:
         "Add an activity icon to the workspace sidebar: clicking it re-sorts the sidebar's conversation list in place - running conversations in a leading Priority group, then history grouped by Today / Yesterday / Weekday / Earlier; click again to restore.",
       activityOpen: "View activity",
+      activityBtnActive: "Group by workspace",
+      activityBtnInactive: "Activity view (running first, grouped by day)",
+      activityPriority: "In progress",
+      activityToday: "Today",
+      activityYesterday: "Yesterday",
+      activityEarlier: "Earlier",
+      activityEmpty: "No conversations yet",
+      activityRunning: "Running",
+      activityDone: "Done",
+      activityNewSession: "New conversation",
+      activityJustNow: "just now",
+      activityMinutesAgo: "{n} min ago",
+      activityHoursAgo: "{n} h ago",
+      activityYesterdayAt: "Yesterday {time}",
       optI18nTitle: "Chinese slash-menu descriptions",
       optI18nShort: "Show / menu command & skill descriptions in Chinese",
       optI18nDesc:
@@ -301,6 +335,44 @@ window.__ModuleLoader__.load({
       reportOpenAria: "Open {name}",
     };
 
+    /**
+     * The active UI locale, normalized to a tag this bundle can format with:
+     * "zh" or "en". The locale service is the source of truth; the document
+     * language is the fallback for the moment before it boots, and zh is the
+     * final default (this plugin's primary audience).
+     * @returns {"zh" | "en"}
+     */
+    function activeLocaleTag() {
+      const fromService = localeFace?.getSnapshot?.()?.active;
+      const raw = fromService ?? (typeof document === "undefined" ? undefined : document.documentElement?.lang);
+      if (raw === undefined || raw === null || String(raw) === "") return "zh";
+      return String(raw).toLowerCase().startsWith("zh") ? "zh" : "en";
+    }
+
+    /**
+     * Translate one toolkit key outside React.
+     *
+     * The activity view builds its DOM by hand (it re-sorts the host's own
+     * sidebar list in place), so it has no `t` prop from the slot system — but
+     * that is no reason for it to hardcode Chinese into an English UI. This
+     * resolves through the same dictionaries every component uses, with the
+     * same "a miss falls back" behaviour.
+     * @param {string} key - key in the toolkit dictionary.
+     * @param {Record<string, string | number>} [params] - `{name}` substitutions.
+     * @returns {string} the localized string.
+     */
+    function toolkitText(key, params) {
+      const tag = activeLocaleTag();
+      const dict = tag === "en" ? en : zh;
+      let text = dict[key] ?? zh[key] ?? key;
+      if (params !== undefined) {
+        for (const [name, value] of Object.entries(params)) {
+          text = text.split("{" + name + "}").join(String(value));
+        }
+      }
+      return text;
+    }
+
     // ── editLastMessage: edit the last user message and resend in place ──────
 
     /**
@@ -322,33 +394,69 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * One `truncatedLabel` function per `t`. JsonBlock memoizes its rendered
+     * string on the identity of this prop, so handing it a fresh arrow on
+     * every render would re-run the truncation on every render.
+     */
+    const truncatedLabels = new WeakMap();
+    function truncatedLabelFor(t) {
+      let label = truncatedLabels.get(t);
+      if (label === undefined) {
+        label = (total) => t("msgTruncated", { total });
+        truncatedLabels.set(t, label);
+      }
+      return label;
+    }
+
+    /**
+     * The last user node's seq in one chat snapshot. The scan runs backwards
+     * from the tail, so memoizing per snapshot turns what would be an
+     * O(messages) walk per user bubble — O(messages²) per update — into one
+     * walk per snapshot.
+     */
+    const lastUserSeqCache = new WeakMap();
+    function lastUserSeq(snapshot) {
+      const cached = lastUserSeqCache.get(snapshot);
+      if (cached !== undefined) return cached;
+      let seq = -1;
+      for (let index = snapshot.order.length - 1; index >= 0; index -= 1) {
+        const candidate = snapshot.nodes.get(snapshot.order[index]);
+        if (candidate?.kind === "user") {
+          seq = candidate.data.seq;
+          break;
+        }
+      }
+      lastUserSeqCache.set(snapshot, seq);
+      return seq;
+    }
+
+    /**
      * User-message renderer for the editLastMessage optimization: shadows the
      * stock `user` node renderer (slot priority -1 vs stock 0) and renders the
      * bubble with this package's own chrome (inline styles over the shared CSS
      * variables), adding a pencil edit action to the actions row when this is
      * the LAST user message and the optimization is enabled. Clicking the
      * pencil turns the bubble into an inline editor — no modal.
+     *
+     * `memo` matches the stock renderer: this shadows EVERY user node, so an
+     * unmemoized replacement would re-render every bubble on every store
+     * change.
      */
-    function ToolkitUserMessageNodeView(props) {
-      const { node, renderMessageImages, t, useChat, sessionId, editLast } = props;
+    const ToolkitUserMessageNodeView = memo(function ToolkitUserMessageNodeView(props) {
+      const { node, renderMessageImages, openFile, openSkill, t, useChat, sessionId, editLast } = props;
       const data = node.data;
       const enabled = editLast?.isEnabled?.() !== false;
       const { text, images, files, rest } = userTextOf(data.content);
       const refs = data.referenceLabels ?? [];
       const skillNames = data.skillNames ?? [];
-      const truncated = (total) => t("msgTruncated", { total });
+      const truncated = truncatedLabelFor(t);
       const showBubble = text !== "" || rest.length > 0;
-      // Only the LAST user message offers the edit action. Walk the order from
-      // the tail and stop at the first user node: scanning every node here runs
-      // once per user bubble on every store change (O(messages²) per update).
-      const tailSeq = useChat((snapshot) => {
-        for (let index = snapshot.order.length - 1; index >= 0; index -= 1) {
-          const candidate = snapshot.nodes.get(snapshot.order[index]);
-          if (candidate?.kind === "user") return candidate.data.seq;
-        }
-        return -1;
-      });
-      const isTail = enabled && tailSeq === data.seq && text !== "";
+      // Only the LAST user message offers the edit action.
+      const tailSeq = useChat(lastUserSeq);
+      // Offering the pencil when the host cannot rewrite guarantees a click
+      // that can only fail; require the capability up front.
+      const canRewrite = typeof editLast?.sessions?.binding === "function";
+      const isTail = enabled && canRewrite && tailSeq === data.seq && text !== "";
 
       const [editing, setEditing] = useState(false);
       const [draft, setDraft] = useState("");
@@ -543,8 +651,12 @@ window.__ModuleLoader__.load({
                     }),
                     jsx("span", {
                       style: { color: "var(--dsw-alias-label-tertiary, #9ca3af)" },
-                      children: [fileExtension(file.name).toUpperCase().slice(0, 8), fileSizeText(file.bytes)]
-                        .filter(Boolean).join(" "),
+                      // fileSizeText(undefined) falls through every branch and
+                      // renders "NaNGB", which is truthy and survives the join.
+                      children: [
+                        fileExtension(file.name).toUpperCase().slice(0, 8),
+                        typeof file.bytes === "number" ? fileSizeText(file.bytes) : "",
+                      ].filter(Boolean).join(" "),
                     }),
                   ],
                 }, "file:" + index)),
@@ -552,7 +664,7 @@ window.__ModuleLoader__.load({
               showBubble ? jsx("div", {
                 style: bubbleStyle,
                 children: [
-                  projectUserText(text, refs, skillNames, "skill"),
+                  projectUserText(text, refs, skillNames, "skill", { openFile, openSkill }),
                   ...rest.map((block, index) => jsx(JsonBlock, {
                     key: index,
                     label: t("msgExtraBlock"),
@@ -580,7 +692,7 @@ window.__ModuleLoader__.load({
           }),
         ],
       });
-    }
+    });
 
     // ── viewActivity: workspace-header activity toggle (in-sidebar re-sort) ──
 
@@ -644,24 +756,37 @@ window.__ModuleLoader__.load({
         const now = Date.now();
         const diffMs = now - ts;
         const diffMin = Math.floor(diffMs / 60000);
-        if (diffMin < 1) return "刚刚";
-        if (diffMin < 60) return `${diffMin}分钟前`;
+        if (diffMin < 1) return toolkitText("activityJustNow");
+        if (diffMin < 60) return toolkitText("activityMinutesAgo", { n: diffMin });
         const d = new Date(ts);
         const dayStart = dayStartOf(ts);
         const todayStart = dayStartOf(now);
         const diffHours = Math.floor(diffMs / 3600000);
         if (dayStart === todayStart && diffHours < 24) {
-          return `${diffHours}小时前`;
+          return toolkitText("activityHoursAgo", { n: diffHours });
         }
         const yesterday = new Date(todayStart);
         yesterday.setDate(yesterday.getDate() - 1);
         if (dayStart === yesterday.getTime()) {
-          return `昨天 ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+          return toolkitText("activityYesterdayAt", { time: `${pad(d.getHours())}:${pad(d.getMinutes())}` });
         }
         return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
       };
 
-      const WEEKDAYS = ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"];
+      /**
+       * Locale-aware weekday name. Intl replaces a hardcoded Chinese table, so
+       * an English UI gets "Wednesday" instead of "星期三".
+       */
+      const weekdayName = (date) => {
+        try {
+          return new Intl.DateTimeFormat(
+            activeLocaleTag() === "zh" ? "zh-CN" : "en-US",
+            { weekday: "long" },
+          ).format(date);
+        } catch {
+          return "";
+        }
+      };
 
       const renderActivityTree = (container) => {
         if (!container || disposed) return;
@@ -727,7 +852,7 @@ window.__ModuleLoader__.load({
         if (running.length > 0) {
           groups.push({
             key: "priority",
-            title: "进行中",
+            title: toolkitText("activityPriority"),
             icon: '<svg class="tk-label-spin" width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M2.871 13.1286C0.0387669 10.2962 0.0387669 5.70383 2.871 2.87141C5.70341 0.0390029 10.2957 0.0391154 13.1282 2.87141L12.1387 3.86094C9.85292 1.57538 6.1469 1.57596 3.86123 3.86163C1.57573 6.14732 1.57573 9.85269 3.86123 12.1384C6.1469 14.424 9.85292 14.4246 12.1387 12.1391L13.1282 13.1286C10.2957 15.9609 5.70341 15.961 2.871 13.1286Z"/></svg>',
             sessions: running,
           });
@@ -737,13 +862,13 @@ window.__ModuleLoader__.load({
         for (const [dayStart, sList] of dayEntries) {
           sList.sort(byRecency);
           const diffDays = Math.round((todayStart - dayStart) / 86400000);
-          let title = "更早";
+          let title = toolkitText("activityEarlier");
           if (diffDays <= 0) {
-            title = "今天";
+            title = toolkitText("activityToday");
           } else if (diffDays === 1) {
-            title = "昨天";
+            title = toolkitText("activityYesterday");
           } else if (diffDays < 7) {
-            title = WEEKDAYS[new Date(dayStart).getDay()] || "更早";
+            title = weekdayName(new Date(dayStart)) || toolkitText("activityEarlier");
           } else {
             const d = new Date(dayStart);
             title = `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
@@ -752,7 +877,8 @@ window.__ModuleLoader__.load({
         }
 
         if (groups.length === 0) {
-          container.innerHTML = '<div style="padding: 24px 16px; text-align: center; font-size: 13px; color: var(--dsw-alias-label-tertiary, #81858c);">暂无会话</div>';
+          container.innerHTML = '<div style="padding: 24px 16px; text-align: center; font-size: 13px; color: var(--dsw-alias-label-tertiary, #81858c);">'
+            + escapeHtml(toolkitText("activityEmpty")) + '</div>';
           return;
         }
 
@@ -767,13 +893,18 @@ window.__ModuleLoader__.load({
           for (const s of grp.sessions) {
             const isSelected = s.id === currentId;
             const projectLabel = labelOf(s);
-            const title = s.title || s.displayTitle || "新会话";
+            const title = s.title || s.displayTitle || toolkitText("activityNewSession");
             const timeStr = formatTime(s.updatedAt);
+            // The status glyphs carry no text, so the accessible name has to
+            // come from aria-label; `title` alone is invisible to assistive
+            // technology. `role="img"` keeps the label tied to the glyph.
             const statusIcon = s.running
-              ? '<span class="tk-running-spinner" title="正在运行"></span>'
-              : (s.completed ? '<span class="tk-completed-dot" title="已完成"></span>' : '<span class="tk-idle-dot"></span>');
+              ? '<span class="tk-running-spinner" role="img" title="' + escapeHtml(toolkitText("activityRunning")) + '" aria-label="' + escapeHtml(toolkitText("activityRunning")) + '"></span>'
+              : (s.completed
+                ? '<span class="tk-completed-dot" role="img" title="' + escapeHtml(toolkitText("activityDone")) + '" aria-label="' + escapeHtml(toolkitText("activityDone")) + '"></span>'
+                : '<span class="tk-idle-dot" aria-hidden="true"></span>');
 
-            html += '<div class="tk-activity-row' + (isSelected ? ' selected' : '') + '" data-session-id="' + escapeHtml(s.id) + '">';
+            html += '<div class="tk-activity-row' + (isSelected ? ' selected' : '') + '" role="button" tabindex="0" data-session-id="' + escapeHtml(s.id) + '">';
             html += '<div class="tk-activity-row-main">';
             html += '<span class="tk-activity-status-slot">' + statusIcon + '</span>';
             html += '<span class="tk-activity-title" title="' + escapeHtml(title) + '">' + escapeHtml(title) + '</span>';
@@ -796,7 +927,7 @@ window.__ModuleLoader__.load({
 
         const rows = container.querySelectorAll(".tk-activity-row");
         rows.forEach((row) => {
-          row.onclick = (e) => {
+          const open = (e) => {
             e.preventDefault();
             e.stopPropagation();
             const sid = row.getAttribute("data-session-id");
@@ -804,23 +935,71 @@ window.__ModuleLoader__.load({
               sessions.open(sid);
             }
           };
+          row.onclick = open;
+          // role="button" + tabindex alone would advertise a control that the
+          // keyboard cannot operate; Enter and Space are what a button owes.
+          row.onkeydown = (e) => {
+            if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") open(e);
+          };
         });
+      };
+
+      /**
+       * The sidebar region that owns BOTH the header actions and the
+       * conversation list. Looking each up document-wide used to be able to
+       * put the toggle in one panel's header and the tree in another panel's
+       * list once a second listing existed (a drawer, a secondary sidebar).
+       * Falls back to the document when the host's class names change.
+       */
+      const sidebarScope = () => {
+        let node = document.querySelector('[class*="_listArea"]')?.parentElement ?? null;
+        for (let depth = 0; node !== null && node !== document.body && depth < 4; depth += 1) {
+          if (node.querySelector('[class*="_headerActions"]') !== null) return node;
+          node = node.parentElement;
+        }
+        return document;
+      };
+
+      /**
+       * Inline `display` values this installer overrode. Restoring with `""`
+       * would discard whatever inline value the host (or another plugin) had
+       * put there, so the previous value is captured on first hide and put
+       * back verbatim.
+       */
+      const hiddenDisplay = new WeakMap();
+      const hideElement = (el) => {
+        if (!hiddenDisplay.has(el)) hiddenDisplay.set(el, el.style.display);
+        el.style.display = "none";
+      };
+      const restoreElement = (el) => {
+        if (!hiddenDisplay.has(el)) return;
+        const previous = hiddenDisplay.get(el);
+        hiddenDisplay.delete(el);
+        el.style.display = previous;
       };
 
       const syncView = () => {
         if (disposed) return;
         const enabled = isEnabled();
-        const headerActions = document.querySelector('[class*="_headerActions"]');
-        const listArea = document.querySelector('[class*="_listArea"]');
+        const root = sidebarScope();
+        const headerActions = root.querySelector('[class*="_headerActions"]');
+        const listArea = root.querySelector('[class*="_listArea"]');
 
         let btn = document.getElementById("tk-activity-btn");
         if (!enabled) {
+          // Leaving the persisted flag set meant re-enabling the optimization
+          // later silently snapped the sidebar back into activity mode instead
+          // of the grouping the user was last looking at.
+          if (active) {
+            active = false;
+            writeStored("dsh:activity-view-active", "false");
+          }
           if (btn) btn.style.display = "none";
           const tree = document.getElementById("tk-activity-tree");
           if (tree) tree.style.display = "none";
           if (listArea) {
             const nativeTrees = listArea.querySelectorAll('[class*="_treeBody"]:not(#tk-activity-tree)');
-            nativeTrees.forEach((el) => { el.style.display = ""; });
+            nativeTrees.forEach(restoreElement);
           }
           return;
         }
@@ -846,8 +1025,8 @@ window.__ModuleLoader__.load({
           }
           btn.style.display = "inline-flex";
           btn.className = "tk-activity-btn" + (active ? " active" : "");
-          btn.title = active ? "按工作区分组查看" : "会话活动视图 (按时间/进行中分组)";
-          btn.setAttribute("aria-label", active ? "按工作区分组查看" : "会话活动视图");
+          btn.title = active ? toolkitText("activityBtnActive") : toolkitText("activityBtnInactive");
+          btn.setAttribute("aria-label", active ? toolkitText("activityBtnActive") : toolkitText("activityOpen"));
         }
 
         if (listArea) {
@@ -858,7 +1037,7 @@ window.__ModuleLoader__.load({
           const isSearching = searchInput && searchInput.value && searchInput.value.trim() !== "";
 
           if (active && !isSearching) {
-            nativeTrees.forEach((el) => { el.style.display = "none"; });
+            nativeTrees.forEach(hideElement);
             if (!tree || tree.parentElement !== listArea) {
               if (!tree) {
                 tree = document.createElement("div");
@@ -875,7 +1054,7 @@ window.__ModuleLoader__.load({
             }
           } else {
             if (tree) tree.style.display = "none";
-            nativeTrees.forEach((el) => { el.style.display = ""; });
+            nativeTrees.forEach(restoreElement);
           }
         }
       };
@@ -928,10 +1107,10 @@ window.__ModuleLoader__.load({
         if (btn) btn.remove();
         const tree = document.getElementById("tk-activity-tree");
         if (tree) tree.remove();
-        const listArea = document.querySelector('[class*="_listArea"]');
+        const listArea = sidebarScope().querySelector('[class*="_listArea"]');
         if (listArea) {
           const nativeTrees = listArea.querySelectorAll('[class*="_treeBody"]');
-          nativeTrees.forEach((el) => { el.style.display = ""; });
+          nativeTrees.forEach(restoreElement);
         }
       };
     }
@@ -971,8 +1150,21 @@ window.__ModuleLoader__.load({
     const SLASH_I18N_FLAG = Symbol.for("dsh-plugin-toolkit.slashI18n.wrapped");
     /** cordis exposes the raw service behind a traceable proxy under this symbol. */
     const CORDIS_ORIGINAL = Symbol.for("cordis.original");
-    /** The locale service face, captured in apply (undefined before that). */
-    let slashI18nLocaleFace = undefined;
+    /**
+     * The locale service face, captured in apply (undefined before that).
+     * Shared by everything that needs the active language outside React:
+     * slashI18n's gate and the activity view's strings.
+     */
+    let localeFace = undefined;
+
+    /**
+     * Live settings scope for the slash rewriters, refreshed on every apply.
+     * The rewriters read it at call time so a remount rebinds them.
+     */
+    let slashScope;
+
+    /** Undo records for the namespace wraps, so teardown restores the host. */
+    const slashWraps = [];
 
     /**
      * Read the slashI18n gate: settings switch on AND the UI language is
@@ -986,7 +1178,7 @@ window.__ModuleLoader__.load({
     function slashI18nActive(scope) {
       const snap = scope?.getSnapshot?.();
       if (snap?.status === "ready" && snap.value?.optimizations?.slashI18n === false) return false;
-      const active = slashI18nLocaleFace?.getSnapshot?.()?.active;
+      const active = localeFace?.getSnapshot?.()?.active;
       return active === undefined || String(active).toLowerCase().startsWith("zh");
     }
 
@@ -1057,10 +1249,9 @@ window.__ModuleLoader__.load({
      * @param {any} service - the namespace service (possibly traceable proxy).
      * @param {string} method - the method name to wrap ("list").
      * @param {(result: any, scope: any) => any} rewrite - result rewriter.
-     * @param {any} scope - settings scope captured for the rewriter.
      * @returns {boolean} whether the wrap took effect.
      */
-    function wrapNamespaceMethod(service, method, rewrite, scope) {
+    function wrapNamespaceMethod(service, method, rewrite) {
       const target = typeof service === "object" && service !== null
         ? (service[CORDIS_ORIGINAL] ?? service)
         : undefined;
@@ -1082,7 +1273,10 @@ window.__ModuleLoader__.load({
               if (outcome !== null && typeof outcome.then === "function") {
                 return outcome.then((result) => {
                   try {
-                    return rewrite(result, scope);
+                    // The scope is read at CALL time, not captured here: a
+                    // remount rebinds it, and freezing the first one made the
+                    // settings toggle stop taking effect.
+                    return rewrite(result, slashScope);
                   } catch (error) {
                     console.warn("[toolkit] slashI18n rewrite failed:", error);
                     return result;
@@ -1099,7 +1293,28 @@ window.__ModuleLoader__.load({
       }
       flag.add(method);
       target[SLASH_I18N_FLAG] = flag;
+      slashWraps.push({ target, method, descriptor: desc });
       return true;
+    }
+
+    /**
+     * Undo every namespace wrap. The patch used to be permanent — torn down
+     * plugin, patched service left behind — which is why a later install of a
+     * different toolkit version found the marker and silently no-oped.
+     */
+    function unwrapNamespaceMethods() {
+      for (const record of slashWraps.splice(0)) {
+        try {
+          Object.defineProperty(record.target, record.method, record.descriptor);
+          const flag = record.target[SLASH_I18N_FLAG];
+          if (flag instanceof Set) {
+            flag.delete(record.method);
+            if (flag.size === 0) delete record.target[SLASH_I18N_FLAG];
+          }
+        } catch (error) {
+          console.warn(`[toolkit] slashI18n could not restore remote method "${record.method}":`, error);
+        }
+      }
     }
 
     /**
@@ -1109,15 +1324,20 @@ window.__ModuleLoader__.load({
      * simply never activates this optimization (the toolkit keeps loading).
      * @param {{ "remote.commands": any, "remote.skills": any }} services - namespace services.
      * @param {any} scope - bound settings scope, or undefined when unavailable.
+     * @returns {() => void} disposer restoring the host's own methods.
      */
     function installSlashI18n(services, scope) {
-      const commands = wrapNamespaceMethod(services["remote.commands"], "list", rewriteCommandsResult, scope);
-      const skills = wrapNamespaceMethod(services["remote.skills"], "list", rewriteSkillsResult, scope);
+      // Refresh the live binding first: this runs on every apply, and the
+      // wrappers installed by an earlier apply must follow the new scope.
+      slashScope = scope;
+      const commands = wrapNamespaceMethod(services["remote.commands"], "list", rewriteCommandsResult);
+      const skills = wrapNamespaceMethod(services["remote.skills"], "list", rewriteSkillsResult);
       if (commands || skills) {
         console.info(`[toolkit] slashI18n installed (commands: ${commands}, skills: ${skills})`);
       } else {
         console.warn("[toolkit] slashI18n: no compatible remote namespace method found");
       }
+      return unwrapNamespaceMethods;
     }
 
     // ── changeReport: codex-style per-turn change report ─────────────────────
@@ -1136,8 +1356,8 @@ window.__ModuleLoader__.load({
     const REPORT_DATA_KEY = "changeReport";
     /** File rows shown before the show-more expander. */
     const REPORT_SHOWN_LIMIT = 4;
-    /** Faces captured in apply (factory-level, like slashI18nLocaleFace). */
-    const changeReportRefs = { scope: undefined, remote: undefined, workspacePathOpen: makeTinyStore(undefined) };
+    /** Faces captured in apply (factory-level, like localeFace). */
+    const changeReportRefs = { scope: undefined, remote: undefined, revealPath: undefined, workspacePathOpen: makeTinyStore(undefined) };
     /** Whether the workspace-path-open capability was probed (per connection). */
     let changeReportCapabilityRequested = false;
 
@@ -1223,10 +1443,29 @@ window.__ModuleLoader__.load({
     /**
      * Root tool-call id → turn number, recorded as root tool/call events fold.
      * Code-dispatch events only carry rootCallId, so this is how their
-     * mutations join the right turn's fold. Grows per page load (bounded by
-     * session length); replay re-fills it deterministically.
+     * mutations join the right turn's fold. Bounded (see
+     * {@link rememberRootCallTurn}) because it is page-scoped: every root call
+     * in every conversation opened during one page load used to accumulate
+     * here forever.
      */
     const reportRootCallTurns = new Map();
+    /** Ceiling on that map; only recently-issued calls can still settle. */
+    const REPORT_ROOT_CALL_LIMIT = 500;
+
+    /**
+     * Record one root call's turn, evicting the oldest entries past the cap.
+     * Map iteration is insertion-ordered, so the front is the oldest call; a
+     * dispatch for an evicted id simply drops out of the report, which can only
+     * happen for a call that settled long before.
+     */
+    function rememberRootCallTurn(callId, turn) {
+      reportRootCallTurns.set(callId, turn);
+      while (reportRootCallTurns.size > REPORT_ROOT_CALL_LIMIT) {
+        const oldest = reportRootCallTurns.keys().next();
+        if (oldest.done === true) break;
+        reportRootCallTurns.delete(oldest.value);
+      }
+    }
 
     /**
      * Conversation turn-data definition: accumulates one hunk per successful
@@ -1262,7 +1501,7 @@ window.__ModuleLoader__.load({
           // Remember the turn of every root call so its code-dispatch children
           // can join this fold (set here, where the routed turn is known).
           const callId = String(match.event.data.callId);
-          if (callId !== "") reportRootCallTurns.set(callId, state.turn);
+          if (callId !== "") rememberRootCallTurn(callId, state.turn);
           // `calls` is private fold state (only `hunks` is published), so mutate
           // it in place instead of copying the whole map on every call (O(n²)).
           state.calls.set(
@@ -1321,6 +1560,12 @@ window.__ModuleLoader__.load({
 
     /** Per-hunk diff totals; a hunk object is immutable once folded. */
     const reportHunkTotals = new WeakMap();
+    /**
+     * Shared empty array for turns without hunks. Allocating a fresh `[]` per
+     * call made the identity check below miss every time, so the selector cache
+     * never hit on the common (no-mutation) path and stored a throwaway entry.
+     */
+    const EMPTY_HUNKS = [];
     /** Last selector answer: repeated evaluations with the same inputs are free. */
     let selectTurnChangesCache = { hunks: null, seq: null, result: null, valid: false };
 
@@ -1334,7 +1579,7 @@ window.__ModuleLoader__.load({
     function selectTurnChanges(owner) {
       if (!changeReportEnabled()) return null;
       const stored = owner.turn?.data?.get?.(REPORT_DATA_KEY);
-      const hunks = Array.isArray(stored?.hunks) ? stored.hunks : [];
+      const hunks = Array.isArray(stored?.hunks) && stored.hunks.length > 0 ? stored.hunks : EMPTY_HUNKS;
       if (selectTurnChangesCache.valid
         && selectTurnChangesCache.hunks === hunks
         && selectTurnChangesCache.seq === owner.seq) {
@@ -1379,10 +1624,13 @@ window.__ModuleLoader__.load({
      * produced-files tail carried.
      */
     function TurnChangeReport(props) {
-      const { matched, openFile, isLoopback, ensureWorkspacePathOpen, useWorkspacePathOpen, t } = props;
+      const { matched, openFile, isLoopback, ensureWorkspacePathOpen, revealPath, useWorkspacePathOpen, t } = props;
+      // Both faces arrive as functions because the slot's inject result is
+      // memoized: reading the value at registration time froze it (see the
+      // turnTail registration in apply).
       useEffect(() => { ensureWorkspacePathOpen?.(); }, [ensureWorkspacePathOpen]);
       const hostCanOpenPath = useWorkspacePathOpen?.((available) => available === true);
-      const canOpenPath = isLoopback === true && hostCanOpenPath === true;
+      const canOpenPath = isLoopback?.() === true && hostCanOpenPath === true;
       const { files, added, removed } = matched;
       const [expanded, setExpanded] = useState(false);
       const shown = expanded ? files : files.slice(0, REPORT_SHOWN_LIMIT);
@@ -1415,7 +1663,9 @@ window.__ModuleLoader__.load({
               // Two-tone full path: the directory part dims to tertiary while
               // the file name stays primary and semibold — the DiffBlock path
               // treatment — so the edited file carries the row.
-              const at = file.path.lastIndexOf("/");
+              // Split on either separator: a Windows path would otherwise keep
+              // C:\src\ as part of the file name and render no directory.
+              const at = Math.max(file.path.lastIndexOf("/"), file.path.lastIndexOf("\\"));
               const dir = at === -1 ? "" : file.path.slice(0, at + 1);
               const base = at === -1 ? file.path : file.path.slice(at + 1);
               return jsxs("button", {
@@ -1440,9 +1690,13 @@ window.__ModuleLoader__.load({
               style: { appearance: "none", border: "none", background: "none", font: "inherit", textAlign: "left", cursor: "pointer", color: "var(--dsw-alias-label-tertiary, #9ca3af)" },
               children: t("reportMore", { count: String(hidden) }),
             }) : null,
-            canOpenPath && files.length > 1 ? jsx("button", {
+            canOpenPath && files.length > 0 ? jsx("button", {
               type: "button",
-              onClick: () => { openFile?.("."); },
+              // Reveal the first changed file in its folder. The stock
+              // produced-files tail has no folder affordance of its own, so
+              // gating this on `files.length > 1` only withheld it from the
+              // commonest case without matching any host behaviour.
+              onClick: () => { revealPath?.(files[0]?.path); },
               style: { alignSelf: "flex-end", appearance: "none", border: "none", background: "none", font: "inherit", cursor: "pointer", color: "var(--dsw-alias-label-tertiary, #9ca3af)" },
               children: t("reportShowFolder"),
             }) : null,
@@ -1519,14 +1773,50 @@ window.__ModuleLoader__.load({
      * @returns {() => void} disposer for the effect teardown.
      */
     function installWorkspacelessChat({ workspaces, sessions }, scope) {
+      // Every path below assumes these two list faces. Checking them up front
+      // keeps a differently-shaped host from throwing inside the effect
+      // factory — which would take down the whole install path — and matches
+      // how the activity installer already guards itself.
+      if (typeof workspaces?.list?.subscribe !== "function"
+        || typeof workspaces?.list?.getSnapshot !== "function"
+        || typeof sessions?.list?.subscribe !== "function"
+        || typeof sessions?.list?.getSnapshot !== "function") {
+        console.warn("[toolkit] workspacelessChat: workspaces/sessions list faces unavailable; optimization dormant");
+        return () => {};
+      }
+
       let busy = false;
       let attempts = 0;
       let retryTimer = undefined;
+      let disposed = false;
 
       const readValue = () => {
         if (scope === undefined) return undefined;
         const snap = scope.getSnapshot?.();
         return snap?.status === "ready" ? snap.value : undefined;
+      };
+
+      /** The composition base layer: where the server keeps resolved defaults. */
+      const readBase = () => {
+        if (scope === undefined) return undefined;
+        const snap = scope.getSnapshot?.();
+        return snap?.status === "ready" ? snap.base : undefined;
+      };
+
+      /**
+       * The chat workspace path to ensure. An explicitly stored value wins; an
+       * empty one falls back to the composition base, which carries the
+       * RESOLVED absolute path (the server substitutes <DSH_HOME>/chat).
+       * Treating "" as "no path" silently disabled the optimization even though
+       * the card documents empty as a valid "use the default".
+       * @param {any} value - the resolved settings value.
+       * @returns {string} the absolute path, or "" when nothing is resolvable.
+       */
+      const resolveChatPath = (value) => {
+        const stored = typeof value?.chatWorkspacePath === "string" ? value.chatWorkspacePath.trim() : "";
+        if (stored !== "") return stored;
+        const base = readBase();
+        return typeof base?.chatWorkspacePath === "string" ? base.chatWorkspacePath.trim() : "";
       };
 
       /** Basename of a host path, used to detect the auto-derived default title. */
@@ -1569,9 +1859,7 @@ window.__ModuleLoader__.load({
         const value = readValue();
         if (value === undefined) return undefined;
         if (value.optimizations?.workspacelessChat === false) return undefined;
-        const chatPath = typeof value.chatWorkspacePath === "string"
-          ? value.chatWorkspacePath.trim()
-          : "";
+        const chatPath = resolveChatPath(value);
         if (chatPath === "") return undefined;
         try {
           const ws = workspaces.list.getSnapshot();
@@ -1591,8 +1879,12 @@ window.__ModuleLoader__.load({
         busy = true;
         try {
           const view = await ensureChatWorkspace();
-          if (view === undefined) throw new Error("toolkit settings namespace not ready");
+          if (disposed) return;
+          if (view === undefined) throw new Error("chat workspace path is not resolvable yet");
           const sessionId = await workspaces.connectWorkspace(view.workspaceId);
+          // A teardown (HMR/remount, or the user switching the optimization
+          // off) must not still connect a workspace or steal the selection.
+          if (disposed) return;
           attempts = 0;
           if (sessions.list.getSnapshot().current === undefined) {
             sessions.open(sessionId);
@@ -1646,6 +1938,7 @@ window.__ModuleLoader__.load({
       void ensureChatWorkspace();
       check();
       return () => {
+        disposed = true;
         if (retryTimer !== undefined) clearTimeout(retryTimer);
         stop1();
         stop2();
@@ -1822,7 +2115,13 @@ window.__ModuleLoader__.load({
           setHighlight((current) => Math.max(current - 1, 0));
         } else if (event.key === "Enter") {
           event.preventDefault();
-          const target = matches[highlight]?.id ?? (freeAdd ? trimmed : undefined);
+          // Only a highlighted row wins while the suggestion panel is open.
+          // After Escape the panel is closed but `matches`/`highlight` are
+          // still populated, so Enter used to add a stale suggestion instead of
+          // the id the user typed.
+          const target = open
+            ? (matches[highlight]?.id ?? (freeAdd ? trimmed : undefined))
+            : (freeAdd ? trimmed : undefined);
           if (target !== undefined) pick(target);
         } else if (event.key === "Backspace" && query === "" && values.length > 0) {
           onRemove(values[values.length - 1]);
@@ -1947,7 +2246,11 @@ window.__ModuleLoader__.load({
      */
     function ToolkitSettingsCard(props) {
       const { t, useToolkitSettings, toolkitSet, toolkitMutate, toolkitModels } = props;
-      const snap = typeof useToolkitSettings === 'function' ? useToolkitSettings((s) => s) : (typeof props.scope?.getSnapshot === 'function' ? props.scope.getSnapshot() : {});
+      // Called unconditionally: a hook inside a conditional expression is a
+      // rules-of-hooks violation, and the `props.scope` fallback the old
+      // ternary carried was unreachable anyway — `inject` only ever passes the
+      // `hooks.toolkitSettings` seat.
+      const snap = (useToolkitSettings?.((s) => s)) ?? {};
       const value = snap.value ?? {};
       const writable = snap.writable === true;
       const opts = value.optimizations ?? {};
@@ -1972,6 +2275,16 @@ window.__ModuleLoader__.load({
       const [pickerFor, setPickerFor] = useState(null);
       const [modelOptions, setModelOptions] = useState(null);
       const [modelOptionsError, setModelOptionsError] = useState(null);
+      /**
+       * The injected candidate loader and the translator, kept fresh on every
+       * render. The candidates effect keys on the dialog alone (so a new `t`
+       * identity cannot re-trigger the fetch) yet must not read a stale
+       * closure — refs give it both.
+       */
+      const modelsLoaderRef = useRef(toolkitModels);
+      const tRef = useRef(t);
+      modelsLoaderRef.current = toolkitModels;
+      tRef.current = t;
 
       // The "saved" badge is transient feedback, like the copy check.
       useEffect(() => {
@@ -2007,28 +2320,45 @@ window.__ModuleLoader__.load({
         }
         let cancelled = false;
         setModelOptionsError(null);
+        // Read through refs so the effect stays keyed on the dialog while still
+        // seeing the newest loader / translator.
+        const loader = modelsLoaderRef.current;
         void (async () => {
           // A missing loader is a wiring bug, never "this route has no
           // models": say so instead of silently rendering an empty list.
-          if (typeof toolkitModels !== "function") {
+          if (typeof loader !== "function") {
             if (!cancelled) {
               setModelOptions([]);
-              setModelOptionsError(t("modelsPickUnavailable"));
+              setModelOptionsError(tRef.current("modelsPickUnavailable"));
             }
             return;
           }
           try {
-            const result = await toolkitModels();
-            if (!cancelled) setModelOptions(Array.isArray(result?.models) ? result.models : []);
+            const result = await loader();
+            if (cancelled) return;
+            // The route reports its own failures (`ok: false` + a coded error)
+            // so a misconfigured or unregistered route is not mistaken for
+            // "this route has no models".
+            if (result?.ok === false) {
+              setModelOptions([]);
+              setModelOptionsError(tRef.current("modelsPickFailed", {
+                message: result.error?.message ?? result.error?.code ?? "route unavailable",
+              }));
+              return;
+            }
+            setModelOptions(Array.isArray(result?.models) ? result.models : []);
           } catch (cause) {
             if (!cancelled) {
               setModelOptions([]);
-              setModelOptionsError(t("modelsPickFailed", { message: cause?.message ?? String(cause) }));
+              setModelOptionsError(tRef.current("modelsPickFailed", { message: cause?.message ?? String(cause) }));
             }
           }
         })();
         return () => { cancelled = true; };
-      }, [modalOpt]); // eslint-disable-line react-hooks/exhaustive-deps
+        // Keyed on the dialog alone: the loader and translator are read through
+        // refs so a re-created `t` identity cannot re-trigger the fetch, while
+        // the closure still sees their latest values.
+      }, [modalOpt]);
 
       const write = async (field, next) => {
         setSaving(true);
@@ -2036,8 +2366,10 @@ window.__ModuleLoader__.load({
         try {
           await toolkitSet(field, next);
           setSavedTick(true);
+          return true;
         } catch (cause) {
           setError(cause?.message ?? String(cause));
+          return false;
         } finally {
           setSaving(false);
         }
@@ -2045,15 +2377,27 @@ window.__ModuleLoader__.load({
 
       const toggle = (key, next) => write("optimizations", { ...opts, [key]: next });
 
-      /** Enable or disable every optimization with one action. */
+      /**
+       * Enable or disable every optimization with one action. Keys this client
+       * does not recognize are carried through: a host that gained an eighth
+       * optimization must not have the user's setting for it reset to the
+       * schema default by one click on "disable all".
+       */
       const setAll = (on) => write(
         "optimizations",
-        Object.fromEntries(OPTIMIZATIONS.map((opt) => [opt.key, on])),
+        {
+          ...opts,
+          ...Object.fromEntries(OPTIMIZATIONS.map((opt) => [opt.key, on])),
+        },
       );
 
       const savePath = () => {
-        setPathDirty(false);
-        void write("chatWorkspacePath", pathDraft.trim());
+        void (async () => {
+          // Clear the dirty bit only AFTER the write lands. Clearing it up
+          // front let the next snapshot overwrite the input with the server
+          // value, silently discarding an edit whose save had just failed.
+          if (await write("chatWorkspacePath", pathDraft.trim())) setPathDirty(false);
+        })();
       };
 
       /**
@@ -2107,20 +2451,29 @@ window.__ModuleLoader__.load({
             setSavedTick(true);
           } catch (cause) {
             setError(cause?.message ?? String(cause));
+            // Keep the draft dirty: the edit did not land, and clearing the
+            // flag here made the next snapshot overwrite it.
+            return;
           } finally {
             setSaving(false);
           }
+          setModelsDirty(false);
         })();
       };
 
       const enabledCount = OPTIMIZATIONS.filter((opt) => opts[opt.key] === true).length;
       const activeOpt = modalOpt === null ? null : OPTIMIZATIONS.find((opt) => opt.key === modalOpt);
       const statusLine =
-        snap.mode === "memory"
-          ? t("statusMemory")
-          : snap.writable
-            ? savedTick ? t("statusSaved") : ""
-            : t("statusReadOnly");
+        // A provider that has not resolved yet is not the same as a read-only
+        // one: reporting "read only" for it would look like a working card
+        // whose toggles silently do nothing.
+        snap.status !== "ready"
+          ? t("statusLoading")
+          : snap.mode === "memory"
+            ? t("statusMemory")
+            : snap.writable
+              ? savedTick ? t("statusSaved") : ""
+              : t("statusReadOnly");
 
       /** One optimization's on/off switch (lives inside its settings modal; the
        *  modal header already carries the title + description, so the row shows
@@ -2290,7 +2643,12 @@ window.__ModuleLoader__.load({
         ],
       });
 
-      /** The modelCapability group: sync button, API key, capability overrides. */
+      /**
+       * The modelCapability group: the API key field, the two forced-modality
+       * pickers, and a save button. There is deliberately no "sync model list"
+       * button here — the POST route stays API/script-only; adopting new models
+       * goes through dsh's own 「获取可用模型」 flow.
+       */
       const modelsGroup = jsxs("div", {
         style: {
           display: "flex", flexDirection: "column", gap: "10px",
@@ -2389,7 +2747,7 @@ window.__ModuleLoader__.load({
           "aria-label": t(opt.titleKey),
           style: {
             width: "calc(50% - 4px)", boxSizing: "border-box",
-            appearance: "none", border: 0, background: "none",
+            appearance: "none",
             font: "inherit", color: "inherit", textAlign: "left", cursor: "pointer",
             display: "flex", alignItems: "center", gap: "10px",
             padding: "10px 12px", borderRadius: "10px",
@@ -2882,10 +3240,27 @@ window.__ModuleLoader__.load({
       (document.head || document.documentElement).appendChild(style);
     }
 
-    exports.inject = ["locale", "slots", "settingsScope"];
-    exports.apply = function apply(ctx) {
+    /**
+     * Register one slot entry, tolerating a duplicate.
+     *
+     * The slots store throws when the same key + priority registers twice.
+     * Under Cordis that cannot normally happen (inject disposes before
+     * re-running), but if it ever does, an unguarded throw aborts the rest of
+     * this install path — silently leaving every later optimization unwired.
+     * Returns the registration handle, or undefined when it was refused.
+     */
+    function safeSlotRegister(ctx, options, component) {
+      try {
+        return ctx.slots.register(options, component);
+      } catch (error) {
+        console.warn(`[toolkit] slot "${options.name}" registration skipped:`, error);
+        return undefined;
+      }
+    }
+
+    exports.inject = ["locale", "slots", "settingsScope"];    exports.apply = function apply(ctx) {
       ctx.locale.register(NS, { zh, en });
-      slashI18nLocaleFace = ctx.locale;
+      localeFace = ctx.locale;
       ensureStyles();
 
       let scope;
@@ -2915,7 +3290,10 @@ window.__ModuleLoader__.load({
       // namespaces mount (they never do on a host without them, leaving the
       // optimization dormant instead of failing the plugin).
       ctx.inject(["remote.commands", "remote.skills"], (services) => {
-        installSlashI18n(services, scope);
+        ctx.effect(
+          () => installSlashI18n(services, scope),
+          "toolkit: slashI18n",
+        );
       });
 
       // changeReport: codex-style per-turn change report. The turn-data
@@ -2951,15 +3329,36 @@ window.__ModuleLoader__.load({
           if (store.getSnapshot() === undefined) load();
         };
         changeReportRefs.ensureWorkspacePathOpen = ensure;
+        /**
+         * Reveal one changed file in the host's file manager. This is the
+         * `action: 'reveal'` arm of the host's own `session.openWorkspacePath`
+         * — the previous implementation passed the sentinel "." to the chat's
+         * file OPENER, which is a different capability that expects a file.
+         * Best-effort: a failure only warns (the card has no error surface).
+         */
+        changeReportRefs.revealPath = (path) => {
+          if (typeof path !== "string" || path === "") return;
+          const sessionRemote = services.remote?.session;
+          if (typeof sessionRemote?.openWorkspacePath !== "function") return;
+          try {
+            Promise.resolve(sessionRemote.openWorkspacePath({ path, action: "reveal" }))
+              .catch((error) => { console.warn("[toolkit] reveal in folder failed:", error); });
+          } catch (error) {
+            console.warn("[toolkit] reveal in folder failed:", error);
+          }
+        };
         ctx.on("connection/reset", () => {
           capabilityRevision += 1;
           pendingCapability = undefined;
           store.set(undefined);
+          // Root-call routing is per connection; stale ids from the previous
+          // one can never settle again.
+          reportRootCallTurns.clear();
           if (changeReportCapabilityRequested) load();
         });
       });
       ctx.slots.inject("conversation.chat.turnTail", function* () {
-        yield ctx.slots.register(
+        const registration = safeSlotRegister(ctx,
           {
             name: "conversation.chat.turnTail",
             priority: REPORT_TAIL_PRIORITY,
@@ -2967,13 +3366,22 @@ window.__ModuleLoader__.load({
             locale: NS,
             registrant: "dsh-plugin-toolkit",
             inject: () => ({
-              isLoopback: changeReportRefs.remote?.$host?.isLoopback === true,
-              ensureWorkspacePathOpen: changeReportRefs.ensureWorkspacePathOpen,
+              // The framework memoizes this factory's RESULT once per
+              // registration (runInject caches it), so every cross-service
+              // reference must be read through a function at call time. Reading
+              // the value here froze it at first render: if the remote/session
+              // services mounted later, `isLoopback` stayed false, the folder
+              // button never appeared, and the edit pencil kept answering
+              // "unsupported" until a full page reload.
+              isLoopback: () => changeReportRefs.remote?.$host?.isLoopback === true,
+              ensureWorkspacePathOpen: () => { changeReportRefs.ensureWorkspacePathOpen?.(); },
+              revealPath: (path) => { changeReportRefs.revealPath?.(path); },
               hooks: { workspacePathOpen: changeReportRefs.workspacePathOpen },
             }),
           },
           TurnChangeReport,
         );
+        if (registration !== undefined) yield registration;
       });
 
       // editLastMessage: shadow the stock `user` chat node renderer (priority
@@ -2981,7 +3389,7 @@ window.__ModuleLoader__.load({
       // The slot is keyed by ChatNodeKind; only `user` is taken over so
       // steering / pending bubbles keep the stock renderer.
       ctx.slots.inject("conversation.chat.node", function* () {
-        yield ctx.slots.register(
+        const registration = safeSlotRegister(ctx,
           {
             name: "conversation.chat.node",
             key: "user",
@@ -2998,12 +3406,16 @@ window.__ModuleLoader__.load({
                     ? snap.value?.optimizations?.editLastMessage !== false
                     : true;
                 },
-                sessions: sessionsService,
+                // Read through a getter for the same reason as the change
+                // report's faces above: this object is built once, but the
+                // sessions service may mount after it.
+                get sessions() { return sessionsService; },
               },
             }),
           },
           ToolkitUserMessageNodeView,
         );
+        if (registration !== undefined) yield registration;
       });
 
       // Settings card on the Plugins page. The slot entry's key must equal
@@ -3011,7 +3423,7 @@ window.__ModuleLoader__.load({
       // namespaces by this exact string.
       if (scope !== undefined) {
         ctx.slots.inject("settings.plugin.item", function* () {
-          yield ctx.slots.register(
+          const registration = safeSlotRegister(ctx,
             {
               name: "settings.plugin.item",
               key: "toolkit",
@@ -3041,6 +3453,7 @@ window.__ModuleLoader__.load({
             },
             ToolkitSettingsCard,
           );
+          if (registration !== undefined) yield registration;
         });
       } else {
         console.warn("[toolkit] settings scope unavailable; settings card skipped");
