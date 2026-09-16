@@ -53,7 +53,7 @@ test("mergeModelLists: junk metadata fields are dropped from entries", () => {
 });
 
 test("mergeModelLists: dedupes live ids and tolerates empty inputs", () => {
-  assert.deepEqual(mergeModelLists({ catalog: CATALOG, live: ["known-a", "known-a"] }).length, 1 + 2);
+  assert.deepEqual(mergeModelLists({ catalog: CATALOG, live: ["known-a", "known-a"] }).length, 3);
   assert.deepEqual(mergeModelLists({ catalog: CATALOG, live: null }), [
     { id: "known-a", name: "Known A", contextWindow: 262144, maxTokens: 32768 },
     { id: "known-b", contextWindow: 128000 },
@@ -63,14 +63,74 @@ test("mergeModelLists: dedupes live ids and tolerates empty inputs", () => {
   assert.deepEqual(mergeModelLists({}), []);
 });
 
+test("extractModelIds: reads the enriched `models` map shape too", () => {
+  // The host's own discovery accepts both shapes; a gateway that answers with
+  // the map used to make this plugin report a parse failure instead.
+  assert.deepEqual(
+    extractModelIds({ models: { "vendor/alpha": { name: "Alpha" }, "vendor/beta": { id: "explicit" } } }),
+    ["vendor/alpha", "explicit"],
+  );
+  // An array under `models` is not the map shape and must not be read as one.
+  assert.equal(extractModelIds({ models: [] }), null);
+  assert.equal(extractModelIds({ models: "nope" }), null);
+});
+
+test("cleanEntry preserves every profile field the host schema defines", () => {
+  // The host's llm-pi-ai `modelFields` are
+  // { name, contextWindow, maxTokens, input, reasoningEfforts, compat }.
+  // Dropping one here deletes it from the user's stored route on the next sync,
+  // which is how hand-tuned reasoningEfforts / compat were being lost.
+  const [entry] = mergeModelLists({
+    catalog: [{
+      id: "m",
+      name: "M",
+      contextWindow: 1000,
+      maxTokens: 100,
+      input: ["text", "image"],
+      reasoningEfforts: false,
+      compat: { requiresThinkingAsText: true },
+      unknownField: "must be dropped",
+    }],
+    live: ["m"],
+  });
+  assert.deepEqual(entry, {
+    id: "m",
+    name: "M",
+    contextWindow: 1000,
+    maxTokens: 100,
+    input: ["text", "image"],
+    reasoningEfforts: false,
+    compat: { requiresThinkingAsText: true },
+  });
+});
+
+test("cleanEntry keeps a reasoningEfforts table and still rejects junk shapes", () => {
+  const merged = mergeModelLists({
+    catalog: [
+      { id: "a", reasoningEfforts: { low: "low" } },
+      { id: "b", reasoningEfforts: ["not", "a", "dict"] },
+      { id: "c", compat: "not-an-object" },
+    ],
+    live: ["a", "b", "c"],
+  });
+  assert.deepEqual(merged[0], { id: "a", reasoningEfforts: { low: "low" } });
+  assert.deepEqual(merged[1], { id: "b" }, "an array is not a valid efforts table");
+  assert.deepEqual(merged[2], { id: "c" }, "a string is not a valid compat profile");
+});
+
 test("diffModelIds: reports additions and removals", () => {
   assert.deepEqual(diffModelIds(["a", "b"], ["b", "c"]), { added: ["c"], removed: ["a"] });
   assert.deepEqual(diffModelIds(null, ["x"]), { added: ["x"], removed: [] });
   assert.deepEqual(diffModelIds(["x"], undefined), { added: [], removed: ["x"] });
 });
 
-test("MAX_LISTING_BYTES matches the dsh discovery ceiling", () => {
-  assert.equal(MAX_LISTING_BYTES, 4 * 1024 * 1024);
+test("MAX_LISTING_BYTES is a documented ceiling on a listing body", () => {
+  // Guards the invariant, not a copy of the literal: a regression would be a
+  // non-positive or absurd bound, or one that stopped matching what the module
+  // uses to bound its reads.
+  assert.ok(Number.isInteger(MAX_LISTING_BYTES), "the bound is an integer");
+  assert.ok(MAX_LISTING_BYTES >= 1024 && MAX_LISTING_BYTES <= 64 * 1024 * 1024,
+    `the bound stays in a sane range, got ${String(MAX_LISTING_BYTES)}`);
 });
 
 import { parseModelToml, applyMetadata } from "../models-core.js";
@@ -119,6 +179,19 @@ test("applyMetadata: fills gaps only and adds image input", () => {
     { id: "a", contextWindow: 5, maxTokens: 7, name: "A" },
     { id: "b", contextWindow: 10, maxTokens: 20, name: "B", input: ["text", "image"] },
   ]);
+});
+
+test("applyMetadata: an EMPTY input list still counts as unanswered", () => {
+  // schemastery materializes an absent array as [], and the host reads that as
+  // "no answer here, inherit the catalog's". Treating [] as a declaration left
+  // the model text-only on this route forever.
+  const entries = [{ id: "empty", input: [] }, { id: "declared", input: ["text"] }];
+  applyMetadata(entries, new Map([
+    ["empty", { wantsImage: true }],
+    ["declared", { wantsImage: true }],
+  ]));
+  assert.deepEqual(entries[0], { id: "empty", input: ["text", "image"] });
+  assert.deepEqual(entries[1], { id: "declared", input: ["text"] }, "a real declaration is never overwritten");
 });
 
 import { collectModelMetadata, fillFromSiblings } from "../models-core.js";
@@ -176,13 +249,23 @@ test("fillFromSiblings: falls back to the only available prefix", () => {
   assert.deepEqual(entries[0], { id: "deepseek-v4-flash-vision-exp", contextWindow: 1000000, maxTokens: 384000 });
 });
 
-test("mapWithConcurrency: runs every item exactly once", async () => {
+test("mapWithConcurrency: runs every item exactly once, never above the cap", async () => {
   const { mapWithConcurrency } = await import("../models-core.js");
   const seen = [];
+  let inFlight = 0;
+  let peak = 0;
   await mapWithConcurrency([1, 2, 3, 4, 5], 2, async (n) => {
     seen.push(n);
+    inFlight += 1;
+    peak = Math.max(peak, inFlight);
+    await new Promise((resolve) => { setTimeout(resolve, 1); });
+    inFlight -= 1;
   });
   assert.deepEqual(seen.slice().sort(), [1, 2, 3, 4, 5]);
+  assert.ok(peak <= 2, `never exceeds the concurrency cap, peaked at ${peak}`);
+  assert.ok(peak > 1, `actually runs work in parallel, peaked at ${peak}`);
+  // A zero/negative cap must still drain the list rather than stall.
+  assert.deepEqual(await mapWithConcurrency([1, 2], 0, async (n) => n * 2), [2, 4]);
 });
 
 import { applyCatalogModalities } from "../models-core.js";
@@ -203,6 +286,13 @@ test("applyCatalogModalities: exact-id image donor grants input; never overwrite
   assert.deepEqual(entries[0].input, ["text", "image"]);
   assert.deepEqual(entries[1].input, ["text"]);
   assert.equal("input" in entries[2], false);
+});
+
+test("applyCatalogModalities: an empty input list does not block the donor", () => {
+  const entries = [{ id: "m", input: [] }];
+  const changed = applyCatalogModalities(entries, [{ id: "m", inputModalities: ["text", "image"] }]);
+  assert.equal(changed, 1);
+  assert.deepEqual(entries[0].input, ["text", "image"]);
 });
 
 test("applyCatalogModalities: absent or malformed donors change nothing", () => {

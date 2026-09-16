@@ -16,32 +16,72 @@
 export const MAX_LISTING_BYTES = 4 * 1024 * 1024;
 
 /**
- * Extract model ids from a parsed OpenAI-compatible listing reply
- * (`{ data: [{ id }] }`). Entries without a usable id are skipped rather than
- * failing the whole listing; duplicates keep their first position.
- * @param {unknown} body - the parsed JSON body of a `GET /models` reply.
+ * Extract model ids from a parsed listing reply. Both shapes the host's own
+ * discovery accepts are understood: the OpenAI-style `{ data: [{ id }] }` and
+ * the enriched `{ models: { <id>: {...} } }` map (where the key is the id and
+ * an `id` field may override it). Entries without a usable id are skipped
+ * rather than failing the whole listing; duplicates keep their first position.
+ * @param {unknown} body - the parsed JSON body of a listing reply.
  * @returns {string[] | null} unique non-empty ids in endpoint order, or null
- *   when the body has no "data" array at all.
+ *   when the body carries neither shape.
  */
 export function extractModelIds(body) {
-  const data = /** @type {{data?: unknown} | null} */ (body)?.data;
-  if (!Array.isArray(data)) return null;
-  const ids = [];
-  const seen = new Set();
-  for (const entry of data) {
-    const id = /** @type {{id?: unknown} | null} */ (entry)?.id;
-    if (typeof id !== "string" || id === "" || seen.has(id)) continue;
-    seen.add(id);
-    ids.push(id);
+  if (body === null || typeof body !== "object") return null;
+  const listing = /** @type {{data?: unknown, models?: unknown}} */ (body);
+  const data = listing.data;
+  if (Array.isArray(data)) {
+    const ids = [];
+    const seen = new Set();
+    for (const entry of data) {
+      const id = /** @type {{id?: unknown} | null} */ (entry)?.id;
+      if (typeof id !== "string" || id === "" || seen.has(id)) continue;
+      seen.add(id);
+      ids.push(id);
+    }
+    return ids;
   }
-  return ids;
+  const models = listing.models;
+  if (models !== null && typeof models === "object" && !Array.isArray(models)) {
+    const ids = [];
+    const seen = new Set();
+    for (const [key, entry] of Object.entries(models)) {
+      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) continue;
+      const declared = /** @type {{id?: unknown}} */ (entry).id;
+      const id = typeof declared === "string" && declared !== "" ? declared : key;
+      if (id === "" || seen.has(id)) continue;
+      seen.add(id);
+      ids.push(id);
+    }
+    return ids;
+  }
+  return null;
+}
+
+/**
+ * The per-model profile fields dsh's llm-pi-ai schema understands. Kept in
+ * step with the host's own `modelFields` set by
+ * `tests/models-core.test.js` → "cleanEntry preserves every profile field the
+ * host schema defines": a field that exists on a stored row but not here is
+ * silently deleted the next time the row travels through a sync, which is how
+ * hand-tuned `reasoningEfforts` / `compat` were being lost.
+ */
+export const MODEL_PROFILE_FIELDS = ["name", "contextWindow", "maxTokens", "input", "reasoningEfforts", "compat"];
+
+/** A plain JSON object (not null, not an array). */
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 /**
  * Keep only the fields dsh's llm-pi-ai model profile understands, dropping
  * junk so a catalog entry can be written back into settings verbatim.
- * @param {{id: string, name?: unknown, contextWindow?: unknown, maxTokens?: unknown}} model
- * @returns {{id: string, name?: string, contextWindow?: number, maxTokens?: number}}
+ *
+ * Every value is either re-emitted verbatim (the shapes below come from rows
+ * the host already validated, so they cannot be junk) or dropped — never
+ * converted, so a round trip through a sync is lossless for the fields the
+ * schema defines.
+ * @param {Record<string, unknown> & {id: string}} model
+ * @returns {Record<string, unknown> & {id: string}}
  */
 function cleanEntry(model) {
   const entry = { id: model.id };
@@ -55,11 +95,21 @@ function cleanEntry(model) {
   // Preserve a declared modality list verbatim. The stored profile may carry
   // hand-tuned input (e.g. ["text","image"]) that dsh's own schema
   // understands; dropping it here would silently strip image support from a
-  // model the user explicitly enabled.
+  // model the user explicitly enabled. An empty list is dropped on purpose:
+  // the host reads `[]` as "no answer here", which is exactly what an absent
+  // field means, and keeping it would stop the registry from filling it in.
   if (Array.isArray(model.input)) {
     const input = model.input.filter((value) => typeof value === "string");
     if (input.length > 0) entry.input = input;
   }
+  // `false` disables reasoning for this model; a dict overrides its effort
+  // table. Both are legal profile values — dropping either silently restores
+  // the inherited default and changes how the model is driven.
+  if (model.reasoningEfforts === false) entry.reasoningEfforts = false;
+  else if (isPlainObject(model.reasoningEfforts)) entry.reasoningEfforts = model.reasoningEfforts;
+  // The request-compatibility overrides (developer role, thinking format,
+  // cache control, ...) are hand-tuned per model for the same reason.
+  if (isPlainObject(model.compat)) entry.compat = model.compat;
   return entry;
 }
 
@@ -174,6 +224,16 @@ function parseTomlInt(valueText) {
 }
 
 /**
+ * Whether an entry already answers the modality question. The host reads an
+ * absent array — and, thanks to schemastery, an empty one — as "no answer
+ * here, inherit the catalog's", so both count as unanswered and stay eligible
+ * for enrichment. Only a non-empty list is a real declaration.
+ */
+function declaresInput(entry) {
+  return Array.isArray(entry.input) && entry.input.length > 0;
+}
+
+/**
  * Fill missing fields on merged model entries from parsed models.dev metadata.
  * Values already present on an entry win — the installed catalog and any hand
  * edit stay authoritative; metadata only fills the gaps and adds image input
@@ -189,7 +249,7 @@ export function applyMetadata(entries, metadata) {
     if (entry.contextWindow === undefined && meta.contextWindow !== undefined) entry.contextWindow = meta.contextWindow;
     if (entry.maxTokens === undefined && meta.maxTokens !== undefined) entry.maxTokens = meta.maxTokens;
     if (entry.name === undefined && meta.name !== undefined) entry.name = meta.name;
-    if (meta.wantsImage === true && Array.isArray(entry.input) === false) {
+    if (meta.wantsImage === true && !declaresInput(entry)) {
       entry.input = ["text", "image"];
     }
   }
@@ -316,7 +376,7 @@ export function applyCatalogModalities(entries, donors) {
   let changed = 0;
   for (const entry of entries) {
     if (entry === null || typeof entry !== "object" || typeof entry.id !== "string") continue;
-    if (Array.isArray(entry.input)) continue;
+    if (declaresInput(entry)) continue;
     const donor = byId.get(entry.id);
     const modalities = Array.isArray(donor?.inputModalities) ? donor.inputModalities : undefined;
     if (modalities === undefined || !modalities.includes("image")) continue;

@@ -125,30 +125,72 @@ export class ModelSyncError extends Error {
 
 // ── upstream access ─────────────────────────────────────────────────────────
 
-/** Fetch helper with an optional Bearer auth, JSON accept, and a timeout. */
-async function upstreamFetch(url, apiKey, signal, timeoutMs, timeoutSec) {
+/** Match a value that may be interpolated into a registry URL path segment. */
+const SAFE_PATH_SEGMENT = /^[A-Za-z0-9._-]+$/;
+
+/**
+ * The listing URL for one wire protocol, mirroring the host's own discovery so
+ * a route the host can list is never one this plugin cannot. OpenAI-style
+ * protocols list at `{base}/models`; `anthropic-messages` lists at
+ * `{root}/v1/models` (the base without one trailing `/v1` segment). The base
+ * is treated as a prefix, never resolved against, so a deployment path keeps
+ * its segments.
+ * @param {string} baseURL - the route's configured base URL.
+ * @param {string} api - the route's wire protocol.
+ * @returns {string} the absolute listing URL.
+ */
+function listingUrl(baseURL, api) {
+  const base = String(baseURL).replace(/\/+$/, "");
+  if (api !== "anthropic-messages") return base + "/models";
+  const root = base.endsWith("/v1") ? base.slice(0, -3) : base;
+  return root + "/v1/models?limit=1000";
+}
+
+/**
+ * One upstream GET whose deadline covers the WHOLE exchange — headers *and*
+ * body. Clearing the timer as soon as `fetch()` resolves (i.e. when headers
+ * arrive) would leave a server free to answer `200` and then stall the body
+ * forever, hanging the sync route with no timeout left to fire.
+ *
+ * The caller's signal is honoured, including the case where it was already
+ * aborted before we got here (a listener added after an abort never fires).
+ * Auth follows the protocol: Anthropic-compatible endpoints take `x-api-key`,
+ * everything else a Bearer token.
+ * @param {string} url - absolute request URL.
+ * @param {{apiKey?: string, signal?: AbortSignal, timeoutSec?: number, maxBytes?: number, api?: string}} options
+ * @returns {Promise<{response: Response, text: string, truncated: boolean}>}
+ */
+async function upstreamGetText(url, { apiKey = "", signal, timeoutSec = 10, maxBytes = MAX_LISTING_BYTES, api } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(
-    () => controller.abort(new Error("timeout")),
-    typeof timeoutMs === "number" && timeoutMs > 0 ? timeoutMs : (timeoutSec ?? 10) * 1000,
+    () => controller.abort(new ModelSyncError("network-error", "upstream request timed out after " + timeoutSec + "s")),
+    Math.max(1, timeoutSec) * 1000,
   );
   // A pending timeout must never hold the event loop open on its own.
   timer.unref?.();
-  // An external signal aborts through the internal controller as well.
-  const onAbort = () => controller.abort(signal.reason);
-  signal?.addEventListener("abort", onAbort, { once: true });
+  const onAbort = () => controller.abort(signal?.reason);
+  if (signal?.aborted === true) controller.abort(signal.reason);
+  else signal?.addEventListener("abort", onAbort, { once: true });
   try {
-    return await fetch(url, {
+    const headers = {
+      Accept: "application/json, text/plain;q=0.9",
+      "User-Agent": "dsh-plugin-toolkit",
+    };
+    if (api === "anthropic-messages") {
+      headers["anthropic-version"] = "2023-06-01";
+      // An empty key means an unauthenticated call (the models.dev registry).
+      if (apiKey !== "") headers["x-api-key"] = apiKey;
+    } else if (apiKey !== "") {
+      headers.Authorization = "Bearer " + apiKey;
+    }
+    const response = await fetch(url, {
       method: "GET",
-      headers: {
-        // An empty key means an unauthenticated call (the models.dev registry).
-        ...(apiKey === "" ? {} : { Authorization: "Bearer " + apiKey }),
-        Accept: "application/json, text/plain;q=0.9",
-        "User-Agent": "dsh-plugin-toolkit",
-      },
+      headers,
       signal: controller.signal,
       redirect: "error",
     });
+    const { text, truncated } = await readBoundedText(response, maxBytes);
+    return { response, text, truncated };
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener("abort", onAbort);
@@ -156,29 +198,41 @@ async function upstreamFetch(url, apiKey, signal, timeoutMs, timeoutSec) {
 }
 
 /**
- * Read a reply body, refusing one that outgrows MAX_LISTING_BYTES. The body is
- * consumed as a stream so the bound holds on bytes actually read, not just on a
- * declared Content-Length the URL's owner may omit.
+ * Read a reply body, refusing to buffer more than `maxBytes`. The body is
+ * consumed as a stream so the bound holds on bytes actually read, not just on
+ * a declared Content-Length the URL's owner may omit or misreport.
+ *
+ * An oversized body is *reported*, not thrown: the caller decides whether
+ * "too big" means a broken listing (a parse failure) or just a chatty error
+ * page (still an HTTP error, whose status matters more).
+ * @param {Response} response - the upstream reply.
+ * @param {number} maxBytes - ceiling on buffered bytes.
+ * @returns {Promise<{text: string, truncated: boolean}>}
  */
-async function readBounded(response) {
+async function readBoundedText(response, maxBytes) {
   const declared = Number(response.headers.get("content-length") ?? Number.NaN);
-  if (Number.isFinite(declared) && declared > MAX_LISTING_BYTES) {
+  if (Number.isFinite(declared) && declared > maxBytes) {
     await response.body?.cancel().catch(() => {});
-    throw new ModelSyncError("parse-failed", "model listing exceeds " + MAX_LISTING_BYTES + " bytes");
+    return { text: "", truncated: true };
   }
   const body = response.body;
-  if (body === null || body === undefined) return "";
+  if (body === null || body === undefined) return { text: "", truncated: false };
   const reader = body.getReader();
   const chunks = [];
   let total = 0;
+  let truncated = false;
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       if (value === undefined) continue;
       total += value.byteLength;
-      if (total > MAX_LISTING_BYTES) {
-        throw new ModelSyncError("parse-failed", "model listing exceeds " + MAX_LISTING_BYTES + " bytes");
+      if (total > maxBytes) {
+        truncated = true;
+        // Stop pulling bytes we are going to discard; also releases the
+        // connection instead of leaving the rest of the body unread.
+        await reader.cancel().catch(() => {});
+        break;
       }
       chunks.push(value);
     }
@@ -188,13 +242,16 @@ async function readBounded(response) {
   } finally {
     reader.releaseLock?.();
   }
+  // The buffer we managed to read is discarded on purpose: a partial listing
+  // is not a listing, and the caller only needs to know it was over the line.
+  if (truncated) return { text: "", truncated: true };
   const buffer = new Uint8Array(total);
   let offset = 0;
   for (const chunk of chunks) {
     buffer.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  return new TextDecoder().decode(buffer);
+  return { text: new TextDecoder().decode(buffer), truncated: false };
 }
 
 /** Pull a human-readable message out of an error body (JSON fields or title tag). */
@@ -214,37 +271,52 @@ function extractServerErrorMessage(text) {
 }
 
 /**
- * Probe one OpenAI-compatible listing endpoint and extract its model ids.
+ * Probe one OpenAI-compatible or Anthropic-compatible listing endpoint and
+ * extract its model ids.
+ * @param {string} baseURL - the route's base URL.
+ * @param {string} apiKey - resolved Bearer / x-api-key credential.
+ * @param {AbortSignal | undefined} signal - caller cancellation.
+ * @param {number} timeoutSec - total deadline covering headers and body.
+ * @param {string} [api] - the route's wire protocol; decides URL and auth shape.
  * @returns {Promise<string[]>} unique ids in endpoint order.
  * @throws {ModelSyncError} classified as invalid-credentials | api-error |
- *   parse-failed | network-error.
+ *   parse-failed | network-error | aborted.
  */
-export async function fetchLiveModelList(baseURL, apiKey, signal, timeoutSec) {
+export async function fetchLiveModelList(baseURL, apiKey, signal, timeoutSec, api = "openai-completions") {
   if (apiKey === "") {
     throw new ModelSyncError("invalid-credentials", "OpenCode API key is missing, invalid, or expired");
   }
-  const url = baseURL.replace(/\/+$/, "") + "/models";
+  const url = listingUrl(baseURL, api);
   let response;
+  let text;
+  let truncated;
   try {
-    response = await upstreamFetch(url, apiKey, signal, undefined, timeoutSec);
+    ({ response, text, truncated } = await upstreamGetText(url, {
+      apiKey,
+      signal,
+      api,
+      timeoutSec: typeof timeoutSec === "number" && timeoutSec > 0 ? timeoutSec : 10,
+    }));
   } catch (error) {
+    // A caller-side cancellation is not a network fault; keep the two apart so
+    // the logs do not report a cancelled probe as a broken endpoint.
+    if (signal?.aborted === true) throw new ModelSyncError("aborted", "model listing request was cancelled");
+    if (error instanceof ModelSyncError) throw error;
     throw new ModelSyncError("network-error", "OpenCode network error: " + (error?.message ?? String(error)));
   }
   if (response.status === 401 || response.status === 403) {
     throw new ModelSyncError("invalid-credentials", "OpenCode API key is missing, invalid, or expired");
   }
-  let text;
-  try {
-    text = await readBounded(response);
-  } catch (error) {
-    if (error instanceof ModelSyncError) throw error;
-    throw new ModelSyncError("network-error", "OpenCode network error: " + (error?.message ?? String(error)));
-  }
+  // Judge the status before trusting the body: a proxy's oversized error page
+  // must still be reported as the HTTP failure it is.
   if (!response.ok) {
     throw new ModelSyncError(
       "api-error",
       "OpenCode API error (HTTP " + response.status + "): " + (extractServerErrorMessage(text) ?? ""),
     );
+  }
+  if (truncated) {
+    throw new ModelSyncError("parse-failed", "model listing exceeds " + MAX_LISTING_BYTES + " bytes");
   }
   let body;
   try {
@@ -277,12 +349,24 @@ const registryInflight = new Map();
 /** Latest registry scan per provider: when it ran and the metadata it produced. */
 let registryCache = { provider: "", at: 0, meta: new Map() };
 
+/** Ceiling on one registry TOML file; these are ~1 KB each. */
+const REGISTRY_MAX_BYTES = 256 * 1024;
+
 /** Fetch and parse one registry TOML across the source mirrors; null on total failure. */
 async function fetchRegistryToml(provider, id) {
+  // Both path segments are caller-influenced config/data; validate them the
+  // same way, so neither can walk out of the provider directory.
+  if (!SAFE_PATH_SEGMENT.test(provider) || !SAFE_PATH_SEGMENT.test(id)) return null;
   for (const source of REGISTRY_SOURCES) {
     try {
-      const response = await upstreamFetch(source + provider + "/models/" + id + ".toml", "", undefined, REGISTRY_TIMEOUT_MS);
-      if (response.ok) return parseModelToml(await response.text());
+      const { response, text, truncated } = await upstreamGetText(
+        source + provider + "/models/" + id + ".toml",
+        { timeoutSec: REGISTRY_TIMEOUT_MS / 1000, maxBytes: REGISTRY_MAX_BYTES },
+      );
+      // The body is always consumed (bounded), so a non-OK reply releases its
+      // connection instead of leaving the socket dangling for the next mirror.
+      if (response.ok && !truncated) return parseModelToml(text);
+      if (response.ok) return null;
       // A 404 is the registry saying "no such model"; the mirrors serve one
       // repository, so asking the next one would only burn its timeout on
       // ids that are simply absent. Only a transport failure (timeout, 5xx)
@@ -317,7 +401,11 @@ async function fetchModelMetadata(ids, provider) {
   // stale "everything is fresh" answer for up to six hours.
   if (cacheFresh && wanted.every((id) => registryCache.meta.has(id))) return registryCache.meta;
   const missing = cacheFresh ? wanted.filter((id) => !registryCache.meta.has(id)) : wanted;
-  if (missing.length === 0) return registryCache.meta;
+  // Nothing left to look up. Only this provider's own cache may answer here:
+  // with an empty request against a cold (or provider-changed) cache this used
+  // to hand back the PREVIOUS provider's metadata, which then sized and even
+  // image-enabled models from a different vendor's registry rows.
+  if (missing.length === 0) return sameProvider ? registryCache.meta : new Map();
   const inflight = registryInflight.get(provider);
   if (inflight !== undefined) return inflight;
   const scan = collectModelMetadata(missing, provider, fetchRegistryToml, {
@@ -350,18 +438,26 @@ let donorCache = { at: 0, models: [] };
 async function crossProviderModels(llm) {
   if (donorCache.at + 60 * 1000 > Date.now()) return donorCache.models;
   const models = [];
+  let complete = true;
   try {
     for (const provider of llm.listProviders()) {
       try {
         models.push(...(await llm.listModels(provider.id)));
       } catch {
-        // One route failing to list never blocks the rest.
+        // One route failing to list never blocks the rest, but it does mean
+        // this answer is partial — see the cache rule below.
+        complete = false;
       }
     }
   } catch {
-    // Runtime absent or moved: no donors, entries stay text-only.
+    // Runtime absent or moved (usually a startup race): answer with no donors
+    // and do NOT cache it. Caching here used to disable cross-provider image
+    // borrowing for a full minute based on a momentary hiccup.
+    return models;
   }
-  donorCache = { at: Date.now(), models };
+  // Only a complete enumeration is cached; a partial one is retried next call
+  // so a route that registers a moment later still contributes its donors.
+  if (complete) donorCache = { at: Date.now(), models };
   return models;
 }
 
@@ -376,15 +472,34 @@ function delay(ms) {
 }
 
 /**
+ * The in-flight llm-pi-ai wait, shared by every startup pass. Two independent
+ * polling loops used to run concurrently (route-api pre-write + modality
+ * healing), each `describe()`-ing every namespace once a second for up to
+ * thirty seconds; they now await one poll between them.
+ */
+let llmPiAiWait = { settings: undefined, promise: undefined };
+
+/**
  * Wait briefly for the llm-pi-ai settings namespace to register and return its
- * descriptor. The route-api pre-write and the saved-modality healing share this
- * one wait instead of each polling the same namespace.
+ * descriptor.
  * @param {object} settings - the settings service (or undefined).
  * @param {number} [attempts] - how many polls before giving up.
  * @param {number} [intervalMs] - delay between polls.
  * @returns {Promise<object | undefined>} the llm-pi-ai descriptor, or undefined.
  */
 async function awaitLlmPiAi(settings, attempts = 30, intervalMs = 1000) {
+  if (llmPiAiWait.settings === settings && llmPiAiWait.promise !== undefined) return llmPiAiWait.promise;
+  const promise = pollLlmPiAi(settings, attempts, intervalMs);
+  llmPiAiWait = { settings, promise };
+  try {
+    return await promise;
+  } finally {
+    if (llmPiAiWait.promise === promise) llmPiAiWait = { settings: undefined, promise: undefined };
+  }
+}
+
+/** The polling loop behind {@link awaitLlmPiAi}; callers share one of these. */
+async function pollLlmPiAi(settings, attempts, intervalMs) {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     let descriptor;
     try {
@@ -415,7 +530,15 @@ export async function ensureRouteApi(ctx) {
     return;
   }
   const resolved = settings?.get?.(LLM_PI_AI_NS);
-  if (resolved?.providers?.[config.routeKey]?.api !== undefined) return;
+  const current = resolved?.providers?.[config.routeKey]?.api;
+  // Idempotent means "already the value we want", not "any value is present":
+  // testing for `undefined` let a route carrying a different protocol (say
+  // anthropic-messages from an earlier configuration surface) stay uncorrected
+  // at startup, while a sync would overwrite it — two writers disagreeing.
+  if (current === config.routeApi) return;
+  if (current !== undefined) {
+    logger?.info?.("[toolkit] route '" + config.routeKey + "' wire protocol " + current + " -> " + config.routeApi);
+  }
   try {
     await settings.update(LLM_PI_AI_NS, {
       providers: { [config.routeKey]: { api: config.routeApi } },
@@ -456,28 +579,33 @@ async function healModalities(ctx) {
   const { logger } = ctx;
   const config = ctx.config();
   if (!config.enabled) return;
-  const settings = ctx.settings;
-  const descriptor = await awaitLlmPiAi(settings);
+  const descriptor = await awaitLlmPiAi(ctx.settings);
   if (descriptor === undefined) {
     logger?.warn?.("[toolkit] llm-pi-ai settings never registered; saved modalities were not healed");
     return;
   }
-  const rawModels = descriptor?.user?.providers?.[config.routeKey]?.models;
-  if (!Array.isArray(rawModels) || rawModels.length === 0) return;
-  const granted = applyCatalogModalities(rawModels, await crossProviderModels(ctx.llm));
-  const override = applyVisionOverride(rawModels, config.vision, config.textOnly);
-  if (granted === 0 && override.granted === 0 && override.stripped === 0) return;
-  try {
-    await settings.update(LLM_PI_AI_NS, {
-      providers: { [config.routeKey]: { models: rawModels } },
-    });
-    logger?.info?.(
-      "[toolkit] saved " + config.routeKey + " model modalities: granted " + granted
-      + ", forced vision " + override.granted + ", forced text-only " + override.stripped,
-    );
-  } catch (error) {
-    logger?.warn?.("[toolkit] could not heal saved model modalities:", error?.message ?? String(error));
+  // One retry: the read-transform-write cycle below can lose a race with a
+  // concurrent sync, and the seam tells us so instead of letting us overwrite.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const read = await readStoredRoute(ctx, config.routeKey);
+    if (read.models.length === 0) return;
+    const granted = applyCatalogModalities(read.models, await crossProviderModels(ctx.llm));
+    const override = applyVisionOverride(read.models, config.vision, config.textOnly);
+    if (granted === 0 && override.granted === 0 && override.stripped === 0) return;
+    const written = await writeRoute(ctx, { models: read.models, expectedRevision: read.revision });
+    if (written.ok) {
+      logger?.info?.(
+        "[toolkit] saved " + config.routeKey + " model modalities: granted " + granted
+        + ", forced vision " + override.granted + ", forced text-only " + override.stripped,
+      );
+      return;
+    }
+    if (!written.conflict) {
+      logger?.warn?.("[toolkit] could not heal saved model modalities:", written.message);
+      return;
+    }
   }
+  logger?.warn?.("[toolkit] saved model modalities conflicted twice; leaving them to the next settings change");
 }
 
 /**
@@ -497,24 +625,29 @@ export async function migrateLegacyModelSettings(ctx) {
   const settings = ctx.settings;
   if (!settings?.describe || !settings?.update || typeof settings.get !== "function") return;
   let toolkitSection;
-  let descriptor;
+  let toolkitRevision;
+  let legacy;
   for (let attempt = 0; attempt < LEGACY_WAIT_ATTEMPTS; attempt++) {
     toolkitSection = settings.get(TOOLKIT_NS);
     // The marker is authoritative as soon as the namespace resolves: later
     // boots return without waiting for the legacy plugin at all.
     if (toolkitSection?.modelsMigratedFromQuotaBadges === true) return;
+    let entries;
     try {
-      descriptor = settings.describe()?.find((entry) => entry?.ns === LEGACY_NS);
+      entries = settings.describe();
     } catch {
       return;
     }
-    if (toolkitSection !== undefined && descriptor !== undefined) break;
+    const legacyEntry = entries?.find((entry) => entry?.ns === LEGACY_NS);
+    const toolkitEntry = entries?.find((entry) => entry?.ns === TOOLKIT_NS);
+    if (typeof toolkitEntry?.revision === "number") toolkitRevision = toolkitEntry.revision;
+    legacy = legacyEntry?.user;
+    if (toolkitSection !== undefined && legacyEntry !== undefined) break;
     await delay(LEGACY_WAIT_MS);
   }
   if (toolkitSection === undefined) return;
   const config = modelConfig(toolkitSection);
   if (config.migratedFromLegacy) return;
-  const legacy = descriptor?.user;
   const patch = { modelsMigratedFromQuotaBadges: true };
   if (legacy !== null && typeof legacy === "object") {
     const key = typeof legacy.apiKey === "string" ? legacy.apiKey.trim() : "";
@@ -546,7 +679,10 @@ export async function migrateLegacyModelSettings(ctx) {
     }
   }
   try {
-    await settings.update(TOOLKIT_NS, patch);
+    // Revision-guarded: the loop above can wait several seconds for the legacy
+    // namespace, and the user may well have touched the toolkit card meanwhile
+    // — that edit must not be clobbered by a stale adoption patch.
+    await settings.update(TOOLKIT_NS, patch, toolkitRevision);
     const adopted = Object.keys(patch).filter((name) => name !== "modelsMigratedFromQuotaBadges");
     if (adopted.length > 0) {
       ctx.logger?.info?.("[toolkit] adopted the former quota-badges model settings: " + adopted.join(", "));
@@ -562,28 +698,85 @@ export async function migrateLegacyModelSettings(ctx) {
  * The route's stored model entries, read straight from the llm-pi-ai user
  * layer. Unlike llm.listModels() — whose LlmModelInfo shape carries only
  * id/name/inputModalities — the raw user section keeps every hand-tuned field
- * (contextWindow, maxTokens, input), so the sync merge can preserve the rows
- * the user already corrected instead of silently rewriting them.
- * @returns {Promise<Array<Record<string, unknown>>>} raw stored entries.
+ * (contextWindow, maxTokens, input, reasoningEfforts, compat), so the sync
+ * merge can preserve the rows the user already corrected instead of silently
+ * rewriting them.
+ *
+ * The descriptor `revision` travels back with the rows so a writer can refuse
+ * to clobber a change made while it was working.
+ * @returns {Promise<{models: Array<Record<string, unknown>>, revision: number | undefined, fromUserLayer: boolean}>}
  */
-async function storedRouteModels(ctx, routeKey) {
+async function readStoredRoute(ctx, routeKey) {
   const { settings, llm } = ctx;
   const usable = (models) =>
     (Array.isArray(models) ? models : []).filter(
       (model) => model !== null && typeof model === "object" && typeof model.id === "string" && model.id !== "",
     );
+  let revision;
   try {
     const descriptor = settings?.describe?.()?.find((entry) => entry?.ns === LLM_PI_AI_NS);
+    if (typeof descriptor?.revision === "number") revision = descriptor.revision;
     const raw = usable(descriptor?.user?.providers?.[routeKey]?.models);
-    if (raw.length > 0) return raw;
+    if (raw.length > 0) return { models: raw, revision, fromUserLayer: true };
   } catch {
     // Fall through to the runtime view.
   }
   try {
-    return usable(await llm?.listModels?.(routeKey));
+    return { models: usable(await llm?.listModels?.(routeKey)), revision, fromUserLayer: false };
   } catch {
     // Route not registered (or the runtime moved): nothing stored yet.
-    return [];
+    return { models: [], revision, fromUserLayer: false };
+  }
+}
+
+/** The rows alone, for callers that do not write. */
+async function storedRouteModels(ctx, routeKey) {
+  return (await readStoredRoute(ctx, routeKey)).models;
+}
+
+/**
+ * Persist the route's model list (and optionally its wire protocol) under the
+ * revision the rows were read at.
+ *
+ * The settings seam rejects a write whose `expectedRevision` is stale
+ * (`SettingsConflictError`). That check is what keeps a slow sync probe from
+ * reverting a settings edit made while it ran — and a heal from reverting a
+ * just-finished sync. Passing `undefined` skips the check, so a host that
+ * cannot report a revision still works.
+ * @returns {Promise<{ok: true} | {ok: false, conflict: boolean, message: string}>}
+ */
+async function writeRoute(ctx, { models, api, expectedRevision }) {
+  const section = { models };
+  if (api !== undefined) section.api = api;
+  try {
+    await ctx.settings.update(
+      LLM_PI_AI_NS,
+      { providers: { [ctx.config().routeKey]: section } },
+      expectedRevision,
+    );
+    return { ok: true };
+  } catch (error) {
+    return {
+      ok: false,
+      conflict: error?.name === "SettingsConflictError",
+      message: error?.message ?? String(error),
+    };
+  }
+}
+
+/**
+ * Whether the runtime knows this route at all. `undefined` means "cannot
+ * tell" (no listProviders on this host), which must not be reported as a
+ * missing route.
+ * @returns {boolean | undefined}
+ */
+function routeRegistered(llm, routeKey) {
+  try {
+    const providers = llm?.listProviders?.();
+    if (!Array.isArray(providers)) return undefined;
+    return providers.some((provider) => provider?.id === routeKey);
+  } catch {
+    return undefined;
   }
 }
 
@@ -593,11 +786,22 @@ async function storedRouteModels(ctx, routeKey) {
  * own view, deduped by id and sorted for a stable list. In-process reads only —
  * the GET route never probes the network, so opening the modal stays instant
  * even when the endpoint is down.
+ *
+ * A failure is reported as a failure. Answering `ok: true` with an empty list
+ * for a route that does not exist is the "empty data instead of an error"
+ * trap this project already ruled out for the card.
  * @param {object} ctx - the model-capability context.
- * @returns {Promise<object>} `{ ok, routeKey, count, models, forcedVision, forcedTextOnly }`.
+ * @returns {Promise<object>} `{ ok, routeKey, count, models, forcedVision, forcedTextOnly }`
+ *   or `{ ok: false, error: { code, message } }`.
  */
 export async function knownRouteModels(ctx) {
   const config = ctx.config();
+  if (!config.enabled) {
+    return {
+      ok: false,
+      error: { code: "disabled", message: "modelCapability is disabled in plugin settings" },
+    };
+  }
   const byId = new Map();
   const remember = (model) => {
     if (model === null || typeof model !== "object") return;
@@ -605,8 +809,10 @@ export async function knownRouteModels(ctx) {
     if (id === "" || byId.has(id)) return;
     const entry = { id };
     if (typeof model.name === "string" && model.name !== "") entry.name = model.name;
-    if (typeof model.contextWindow === "number") entry.contextWindow = model.contextWindow;
-    if (typeof model.maxTokens === "number") entry.maxTokens = model.maxTokens;
+    // Same validation as the write path, so a NaN/Infinity capacity (which
+    // serialises to JSON `null`) can never reach the picker.
+    if (Number.isInteger(model.contextWindow) && model.contextWindow > 0) entry.contextWindow = model.contextWindow;
+    if (Number.isInteger(model.maxTokens) && model.maxTokens > 0) entry.maxTokens = model.maxTokens;
     const modalities = Array.isArray(model.input)
       ? model.input
       : (Array.isArray(model.inputModalities) ? model.inputModalities : undefined);
@@ -618,10 +824,22 @@ export async function knownRouteModels(ctx) {
   };
   // Stored user-layer rows lead: they keep capacities the runtime view drops.
   for (const model of await storedRouteModels(ctx, config.routeKey)) remember(model);
+  let listed = true;
   try {
     for (const model of (await ctx.llm?.listModels?.(config.routeKey)) ?? []) remember(model);
   } catch {
-    // A route that cannot list still offers its stored rows.
+    // A route that cannot list still offers its stored rows — but if it also
+    // stores nothing, say why instead of answering an empty list.
+    listed = false;
+  }
+  if (!listed && byId.size === 0 && routeRegistered(ctx.llm, config.routeKey) === false) {
+    return {
+      ok: false,
+      error: {
+        code: "no-route",
+        message: 'no llm-pi-ai provider route named "' + config.routeKey + '" is registered',
+      },
+    };
   }
   const models = [...byId.values()].sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
   return {
@@ -691,61 +909,94 @@ export async function syncModelsOnce(ctx) {
   }
   if (live === undefined) {
     try {
-      live = await fetchLiveModelList(config.baseURL, apiKey, undefined, config.timeoutSec);
+      live = await fetchLiveModelList(config.baseURL, apiKey, undefined, config.timeoutSec, config.routeApi);
     } catch (error) {
       return { ok: false, error: { code: error?.code ?? "network-error", message: error?.message ?? String(error) } };
     }
   }
-  // Merge base: stored raw entries first (hand edits win per id), then
-  // discovery candidates for ids nothing stored describes.
-  const stored = await storedRouteModels(ctx, config.routeKey);
-  const catalog = [...stored];
-  const seen = new Set(stored.map((model) => model.id));
-  for (const donor of donors) {
-    if (donor !== null && typeof donor === "object" && typeof donor.id === "string" && donor.id !== "" && !seen.has(donor.id)) {
-      seen.add(donor.id);
-      catalog.push(donor);
+  // Build the written list from one stored snapshot. Split out because a
+  // revision conflict makes us redo it against fresher rows.
+  const buildMerged = async (storedRows) => {
+    // Merge base: stored raw entries first (hand edits win per id), then
+    // discovery candidates for ids nothing stored describes.
+    const catalog = [...storedRows];
+    const seen = new Set(storedRows.map((model) => model.id));
+    for (const donor of donors) {
+      if (donor !== null && typeof donor === "object" && typeof donor.id === "string" && donor.id !== "" && !seen.has(donor.id)) {
+        seen.add(donor.id);
+        catalog.push(donor);
+      }
     }
-  }
-  const merged = mergeModelLists({ catalog, live });
-  if (config.enrichFromRegistry) {
-    try {
-      applyMetadata(merged, await fetchModelMetadata(live, config.registryProvider));
-    } catch {
-      // Metadata is a bonus; the bare listing stays serviceable.
+    const merged = mergeModelLists({ catalog, live });
+    if (config.enrichFromRegistry) {
+      try {
+        applyMetadata(merged, await fetchModelMetadata(live, config.registryProvider));
+      } catch {
+        // Metadata is a bonus; the bare listing stays serviceable.
+      }
     }
-  }
-  // A sync is explicit, so it also fills unsized ids from their closest sized
-  // sibling in the route's own catalog before persisting, and grants image
-  // input wherever another registered provider declares the same id
-  // multimodal (the official DeepSeek route does, for the vision models).
-  fillFromSiblings(merged, catalog);
-  const grantedVision = applyCatalogModalities(merged, await crossProviderModels(llm));
-  // Explicit user overrides win over every automatic rule.
-  const override = applyVisionOverride(merged, config.vision, config.textOnly);
-  try {
-    await settings.update(LLM_PI_AI_NS, {
-      providers: { [config.routeKey]: { api: config.routeApi, models: merged } },
+    // A sync is explicit, so it also fills unsized ids from their closest sized
+    // sibling in the route's own catalog before persisting, and grants image
+    // input wherever another registered provider declares the same id
+    // multimodal (the official DeepSeek route does, for the vision models).
+    fillFromSiblings(merged, catalog);
+    const grantedVision = applyCatalogModalities(merged, await crossProviderModels(llm));
+    // Explicit user overrides win over every automatic rule.
+    const override = applyVisionOverride(merged, config.vision, config.textOnly);
+    return { merged, grantedVision, override };
+  };
+
+  let read = await readStoredRoute(ctx, config.routeKey);
+  let built = await buildMerged(read.models);
+  let written = await writeRoute(ctx, {
+    models: built.merged,
+    api: config.routeApi,
+    expectedRevision: read.revision,
+  });
+  if (!written.ok && written.conflict) {
+    // The route changed while the probe was in flight (a settings save, or a
+    // healing pass). Re-read and rebuild on the fresh rows so the sync extends
+    // that change instead of silently reverting it.
+    logger?.info?.("[toolkit] route changed during the sync probe; rebuilding on the fresh list");
+    read = await readStoredRoute(ctx, config.routeKey);
+    built = await buildMerged(read.models);
+    written = await writeRoute(ctx, {
+      models: built.merged,
+      api: config.routeApi,
+      expectedRevision: read.revision,
     });
-  } catch (error) {
+  }
+  if (!written.ok) {
     return {
       ok: false,
-      error: { code: "settings-write-failed", message: error?.message ?? String(error) },
+      error: {
+        code: written.conflict ? "settings-conflict" : "settings-write-failed",
+        message: written.message,
+      },
     };
   }
-  const diff = diffModelIds(
-    stored.map((model) => model.id),
-    live,
-  );
+  // Report what the write actually did to the route. Diffing against the
+  // endpoint listing instead would claim models were "removed" that the merge
+  // deliberately keeps (a stored id the endpoint no longer serves survives by
+  // design), which made the status card lie. `endpointMissing` names those ids
+  // explicitly, so "the vendor retired it" is visible without pretending it
+  // was dropped.
+  const beforeIds = read.models.map((model) => model.id);
+  const afterIds = built.merged.map((model) => model.id);
+  const diff = diffModelIds(beforeIds, afterIds);
+  const liveIds = new Set(live);
+  const afterSet = new Set(afterIds);
+  const endpointMissing = beforeIds.filter((id) => !liveIds.has(id) && afterSet.has(id));
   return {
     ok: true,
     routeKey: config.routeKey,
-    total: merged.length,
+    total: built.merged.length,
     added: diff.added,
     removed: diff.removed,
-    ...grantedVision > 0 ? { grantedImageInput: grantedVision } : {},
-    ...override.granted > 0 ? { forcedVision: override.granted } : {},
-    ...override.stripped > 0 ? { forcedTextOnly: override.stripped } : {},
+    ...endpointMissing.length > 0 ? { endpointMissing } : {},
+    ...built.grantedVision > 0 ? { grantedImageInput: built.grantedVision } : {},
+    ...built.override.granted > 0 ? { forcedVision: built.override.granted } : {},
+    ...built.override.stripped > 0 ? { forcedTextOnly: built.override.stripped } : {},
     syncedAt: new Date().toISOString(),
   };
 }
@@ -778,8 +1029,19 @@ export function installDiscoveryEnrichment(ctx) {
     if (!(map instanceof Map)) return false;
     const inner = map.get(LLM_PI_AI_NS);
     if (typeof inner !== "function") return false;
-    wrapped = async (request) => {
-      const base = await inner(request);
+    // Already wrapped — by an earlier install of this plugin, or a remount
+    // whose disposer has not run. Wrapping the wrapper would probe the live
+    // endpoint twice per discovery call, so adopt the existing one instead.
+    if (inner.enrichedByToolkit === true) {
+      original = inner;
+      wrapped = inner;
+      return true;
+    }
+    // The host calls a discovery as discover(request, signal); taking only the
+    // first argument silently discarded the caller's cancellation, both for
+    // the catalog answer and for our own probe.
+    wrapped = async (request, signal) => {
+      const base = await inner(request, signal);
       const current = config();
       if (!current.enabled || request?.provider !== current.routeKey) return base;
       try {
@@ -791,8 +1053,11 @@ export function installDiscoveryEnrichment(ctx) {
         const live = await fetchLiveModelList(
           baseURL,
           draftKey !== "" ? draftKey : resolveApiKey(current),
-          request.signal,
+          signal,
           current.timeoutSec,
+          // The request carries the protocol the GUI is asking about; fall back
+          // to the route's configured one so the URL and auth shape match.
+          typeof request.api === "string" && request.api !== "" ? request.api : current.routeApi,
         );
         const merged = mergeModelLists({ catalog: base, live });
         // Tag the answer as one that truly reflects the live endpoint. The
@@ -805,16 +1070,22 @@ export function installDiscoveryEnrichment(ctx) {
           // Metadata is a bonus: never let it hold the fetch answer for more
           // than three seconds. A slow scan keeps running in the background —
           // the next fetch is then served instantly from cache.
+          let budgetTimer;
           const budget = new Promise((resolve) => {
-            const timer = setTimeout(() => resolve(null), 3000);
-            timer.unref?.();
+            budgetTimer = setTimeout(() => resolve(null), 3000);
+            budgetTimer.unref?.();
           });
-          const meta = await Promise.race([fetchModelMetadata(live, current.registryProvider), budget]);
-          if (meta !== null) {
-            applyMetadata(merged, meta);
-            fillFromSiblings(merged, base);
+          try {
+            const meta = await Promise.race([fetchModelMetadata(live, current.registryProvider), budget]);
+            if (meta !== null) applyMetadata(merged, meta);
+          } finally {
+            clearTimeout(budgetTimer);
           }
         }
+        // Sibling fill needs only the catalog we already hold, so it must not
+        // sit behind the registry race: a cold or slow registry would
+        // otherwise disable local capacity inheritance as well.
+        fillFromSiblings(merged, base);
         return merged;
       } catch (error) {
         logger?.warn?.("[toolkit] live model probe failed; answering from the catalog:", error?.message ?? error);
@@ -868,6 +1139,18 @@ function sendJson(res, body, status = 200) {
   res.end(JSON.stringify(body));
 }
 
+/**
+ * The 405 payload. Shaped like every other failure this module returns
+ * (`{ ok, error: { code, message } }`) so a scripted caller can parse one
+ * error shape instead of two — it used to be a bare string here.
+ */
+function methodNotAllowed(allowed) {
+  return {
+    ok: false,
+    error: { code: "method-not-allowed", message: "only " + allowed + " is allowed on this route" },
+  };
+}
+
 /** The latest installed capability context, for settings-change re-healing. */
 let activeContext = null;
 
@@ -880,6 +1163,8 @@ export function resetModelSyncCaches() {
   registryInflight.clear();
   registryCache = { provider: "", at: 0, meta: new Map() };
   donorCache = { at: 0, models: [] };
+  // Also drop the shared startup poll, so a test can observe a fresh wait.
+  llmPiAiWait = { settings: undefined, promise: undefined };
 }
 
 /**
@@ -889,6 +1174,18 @@ export function resetModelSyncCaches() {
  */
 export function rehealModelCapability() {
   if (activeContext !== null) void ensureModalities(activeContext).catch(() => {});
+}
+
+/** In-flight sync, shared by concurrent POSTs so a burst runs one probe. */
+let syncInflight = null;
+
+/** Run one sync, letting concurrent callers share the attempt already running. */
+function syncSingleFlight(ctx) {
+  if (syncInflight !== null) return syncInflight;
+  syncInflight = syncModelsOnce(ctx).finally(() => {
+    syncInflight = null;
+  });
+  return syncInflight;
 }
 
 /**
@@ -916,13 +1213,16 @@ export function installModelCapability(hostCtx, configThunk) {
       },
       effect: (fn, label) => sctx.effect(fn, label),
     };
-    activeContext = ctx;
-    // Every async kick is contained: a settings/webServer seam going away must
-    // never surface as an unhandled rejection from a background repair.
-    void migrateLegacyModelSettings(ctx).catch(() => {});
-    installDiscoveryEnrichment(ctx);
-    void ensureRouteApi(ctx).catch(() => {});
-    void ensureModalities(ctx).catch(() => {});
+
+    // Publish this context for settings-change re-healing, and — just as
+    // importantly — withdraw it on dispose. A module-level context that
+    // outlived its install kept receiving reheal calls against a dead seam.
+    sctx.effect(() => {
+      activeContext = ctx;
+      return () => {
+        if (activeContext === ctx) activeContext = null;
+      };
+    }, "toolkit: modelCapability context");
 
     // POST sync-models: probe the live listing, merge, persist. The path is
     // read once at registration; changing it is a restart-level change.
@@ -933,11 +1233,13 @@ export function installModelCapability(hostCtx, configThunk) {
           path: modelConfig(configThunk()).syncPath,
           handler: async (req, res) => {
             if (req.method !== "POST") {
-              sendJson(res, { ok: false, error: "Method not allowed" }, 405);
+              sendJson(res, methodNotAllowed("POST"), 405);
               return;
             }
             try {
-              sendJson(res, await syncModelsOnce(ctx));
+              // Concurrent POSTs share one probe instead of each launching its
+              // own endpoint + registry fan-out.
+              sendJson(res, await syncSingleFlight(ctx));
             } catch (error) {
               sendJson(res, {
                 ok: false,
@@ -957,7 +1259,7 @@ export function installModelCapability(hostCtx, configThunk) {
           path: modelConfig(configThunk()).modelsPath,
           handler: async (req, res) => {
             if (req.method !== "GET") {
-              sendJson(res, { ok: false, error: "Method not allowed" }, 405);
+              sendJson(res, methodNotAllowed("GET"), 405);
               return;
             }
             try {
@@ -972,5 +1274,18 @@ export function installModelCapability(hostCtx, configThunk) {
         }),
       "toolkit: GET models route",
     );
+
+    // Routes first, enrichment second: a route-registration failure must not
+    // leave a live discovery wrap behind.
+    installDiscoveryEnrichment(ctx);
+    // Every async kick is contained: a settings/webServer seam going away must
+    // never surface as an unhandled rejection from a background repair.
+    //
+    // The legacy adoption is deliberately NOT gated on the optimization
+    // toggle: it moves configuration, not activity, and running it while the
+    // feature is off is what makes turning it on later work immediately.
+    void migrateLegacyModelSettings(ctx).catch(() => {});
+    void ensureRouteApi(ctx).catch(() => {});
+    void ensureModalities(ctx).catch(() => {});
   });
 }

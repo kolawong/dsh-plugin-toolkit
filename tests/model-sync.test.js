@@ -55,10 +55,20 @@ function stubFetch(handler) {
  * a recording update(), an llm runtime with per-route and donor models, and a
  * config thunk.
  */
-function makeCtx(config, { stored = [], donors = [], routeModels = [], describe, toolkitValue } = {}) {
+function makeCtx(config, {
+  stored = [],
+  donors = [],
+  routeModels = [],
+  describe,
+  toolkitValue,
+  providers,
+  listModelsThrows = false,
+  updateThrows,
+} = {}) {
   const writes = [];
   const descriptor = {
     ns: LLM_PI_AI_NS,
+    revision: 7,
     user: { providers: { "opencode-go": { models: stored } } },
   };
   const resolvedToolkit = toolkitValue ?? { modelsMigratedFromQuotaBadges: true };
@@ -68,13 +78,19 @@ function makeCtx(config, { stored = [], donors = [], routeModels = [], describe,
     settings: {
       get: (ns) => (ns === "toolkit" ? resolvedToolkit : undefined),
       describe: () => (describe !== undefined ? describe : [descriptor]),
-      update: async (ns, patch) => { writes.push({ ns, patch }); },
+      update: async (ns, patch) => {
+        if (updateThrows !== undefined) throw updateThrows;
+        writes.push({ ns, patch });
+      },
     },
     llm: {
       discoveries: new Map(),
-      listProviders: () => [{ id: "opencode-go" }, { id: "deepseek" }],
+      listProviders: () => providers ?? [{ id: "opencode-go" }, { id: "deepseek" }],
       // The route's own listing versus another provider's (donor) catalog.
-      listModels: async (id) => (id === "deepseek" ? donors : routeModels),
+      listModels: async (id) => {
+        if (listModelsThrows) throw new Error("route is not registered");
+        return id === "deepseek" ? donors : routeModels;
+      },
     },
   };
   return { ctx, writes };
@@ -429,4 +445,100 @@ test("fetchLiveModelList: an oversized streamed listing is refused without waiti
   } finally {
     fetchStub.restore();
   }
+});
+
+// ── route failure reporting ─────────────────────────────────────────────────
+
+test("knownRouteModels: an unregistered route is an error, not an empty list", async () => {
+  // The card renders candidates from this payload. Reporting `ok: true, count:
+  // 0` for a route that does not exist showed an unexplained empty picker while
+  // the real problem (a mistyped modelsRouteKey) stayed invisible.
+  const { ctx } = makeCtx(BASE_CONFIG, {
+    providers: [{ id: "some-other-route" }],
+    listModelsThrows: true,
+  });
+  const payload = await knownRouteModels(ctx);
+  assert.equal(payload.ok, false);
+  assert.equal(payload.error.code, "no-route");
+  assert.match(payload.error.message, /opencode-go/);
+});
+
+test("knownRouteModels: a disabled optimization is reported as such", async () => {
+  const { ctx } = makeCtx({ ...BASE_CONFIG, optimizations: { modelCapability: false } });
+  const payload = await knownRouteModels(ctx);
+  assert.equal(payload.ok, false);
+  assert.equal(payload.error.code, "disabled");
+});
+
+test("knownRouteModels: a route that cannot list still serves its stored rows", async () => {
+  const { ctx } = makeCtx(BASE_CONFIG, { stored: [{ id: "stored-a" }], listModelsThrows: true });
+  const payload = await knownRouteModels(ctx);
+  assert.equal(payload.ok, true);
+  assert.deepEqual(payload.models.map((model) => model.id), ["stored-a"]);
+});
+
+test("knownRouteModels: non-finite capacities never reach the picker", async () => {
+  const { ctx } = makeCtx(BASE_CONFIG, {
+    stored: [{ id: "nan", contextWindow: Number.NaN, maxTokens: Number.POSITIVE_INFINITY }],
+  });
+  const payload = await knownRouteModels(ctx);
+  assert.deepEqual(payload.models, [{ id: "nan" }]);
+});
+
+// ── sync reporting ──────────────────────────────────────────────────────────
+
+test("syncModelsOnce: added/removed describe the route, not the endpoint listing", async (t) => {
+  resetModelSyncCaches();
+  const fetchStub = stubFetch(() => listingResponse(["a"]));
+  t.after(() => fetchStub.restore());
+  // The route stores a, b, c; the endpoint now serves only a. The merge is
+  // deliberately additive, so nothing is dropped — and the payload must say so
+  // instead of claiming b and c were removed while writing them back.
+  const { ctx, writes } = makeCtx(BASE_CONFIG, { stored: [{ id: "a" }, { id: "b" }, { id: "c" }] });
+  const payload = await syncModelsOnce(ctx);
+  assert.equal(payload.ok, true);
+  const written = writes.at(-1).patch.providers["opencode-go"].models.map((model) => model.id);
+  assert.deepEqual(written, ["a", "b", "c"], "catalog-only ids survive the merge");
+  assert.deepEqual(payload.removed, [], "nothing left the route, so nothing may claim to have");
+  assert.deepEqual(payload.added, []);
+  assert.deepEqual(payload.endpointMissing, ["b", "c"], "the retired ids are named explicitly instead");
+});
+
+test("syncModelsOnce: a newly listed model is reported as added", async (t) => {
+  resetModelSyncCaches();
+  const fetchStub = stubFetch(() => listingResponse(["a", "b"]));
+  t.after(() => fetchStub.restore());
+  const { ctx } = makeCtx(BASE_CONFIG, { stored: [{ id: "a" }] });
+  const payload = await syncModelsOnce(ctx);
+  assert.equal(payload.ok, true);
+  assert.deepEqual(payload.added, ["b"]);
+  assert.deepEqual(payload.removed, []);
+  assert.equal("endpointMissing" in payload, false, "nothing was missing from the endpoint");
+});
+
+test("syncModelsOnce: a write conflict re-reads and rebuilds instead of reverting", async (t) => {
+  resetModelSyncCaches();
+  const fetchStub = stubFetch(() => listingResponse(["a", "b"]));
+  t.after(() => fetchStub.restore());
+  // First write hits a stale revision; the retry must succeed on fresh rows.
+  let attempts = 0;
+  const conflict = Object.assign(new Error("settings namespace changed since it was read"), {
+    name: "SettingsConflictError",
+  });
+  const { ctx, writes } = makeCtx(BASE_CONFIG, {
+    stored: [{ id: "a" }],
+    updateThrows: undefined,
+  });
+  const realUpdate = ctx.settings.update;
+  ctx.settings.update = async (ns, patch, revision) => {
+    attempts += 1;
+    if (attempts === 1) throw conflict;
+    // The revision read for the retry must come from a fresh describe().
+    assert.equal(revision, 7, "the retry writes under the revision it just read");
+    return realUpdate(ns, patch, revision);
+  };
+  const payload = await syncModelsOnce(ctx);
+  assert.equal(payload.ok, true, "the retry succeeds");
+  assert.equal(attempts, 2, "exactly one retry");
+  assert.deepEqual(writes.at(-1).patch.providers["opencode-go"].models.map((model) => model.id), ["a", "b"]);
 });
