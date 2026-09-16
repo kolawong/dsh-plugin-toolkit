@@ -35,7 +35,7 @@
 | # | 优化项 | 作用 | 默认 | 所在半边 |
 |---|---|---|---|---|
 | 1 | [`workspacelessChat`](#workspacelesschat) | 维护一个无项目对话工作区，并在冷启动时自动接入 | 开 | 客户端 + 服务端 |
-| 2 | [`editLastMessage`](#editlastmessage) | 编辑上一条用户消息并重发，模型上下文真正回退 | 开 | 客户端 |
+| 2 | [`editLastMessage`](#editlastmessage) | 编辑上一条用户消息并重发，模型上下文真正回退 | 开 | 客户端（依赖宿主 `session.rewrite` RPC） |
 | 3 | [`viewActivity`](#viewactivity) | 侧栏「活动」图标：运行中优先，再按 今天/昨天/星期X/更早 分组 | 开 | 客户端 |
 | 4 | [`slashI18n`](#slashi18n) | 「/」菜单的命令与技能描述显示中文 | 开 | 客户端 |
 | 5 | [`changeReport`](#changereport) | 回合尾部 codex 风格的改动报告卡片 | 开 | 客户端 |
@@ -218,12 +218,12 @@ OpenCode Go 现在会 400 拒绝缺少 `x-opencode-session` 的请求（`{"type"
 | `modelsBaseURL` | `https://opencode.ai/zen/go/v1` | 探测实时模型清单的端点。 |
 | `modelsRouteApi` | `openai-completions` | 预写到路由上的 wire protocol。 |
 | `modelsSyncPath` | `/api/toolkit/sync-models` | 显式同步的 same-origin 路由（卡片上没有入口，仅供 API/脚本；改动需重启）。 |
-| `modelsPath` | `/api/toolkit/models` | 选择器候选模型的 same-origin 路由（改动需重启）。 |
+| `modelsPath` | `/api/toolkit/models` | 同源路由，列出选择器的候选模型。服务端只在启动时注册该路径（修改需重启），而卡片是实时读取的，因此在重启前改它会指向服务端尚未提供的路由。 |
 | `modelsEnrichFromRegistry` | `true` | 是否用 models.dev 注册表补全缺失容量/模态。 |
 | `modelsRegistryProvider` | `opencode-go` | models.dev 中对应的 provider 目录名。 |
 | `modelsVision` | `[]` | 强制支持图像输入的模型 id。 |
 | `modelsTextOnly` | `[]` | 强制去掉图像输入的模型 id。 |
-| `modelsTimeoutSec` | `10` | 探测与注册表请求的超时（秒）。 |
+| `modelsTimeoutSec` | `10` | 实时探测的总超时（秒，覆盖响应头**与**响应体）。models.dev 注册表读取使用自己固定的 4 秒预算。 |
 
 > 说明：本项含服务端路由与独立配置字段，按下面的「毕业规则」已达到可拆出的体量；当前有意保留在 Toolkit 内，作为编号优化项统一管理。
 
@@ -240,6 +240,7 @@ OpenCode Go 现在会 400 拒绝缺少 `x-opencode-session` 的请求（`{"type"
 | `optimizations.changeReport` | boolean | `true` | changeReport |
 | `optimizations.opencodeSession` | boolean | `true` | opencodeSession |
 | `optimizations.modelCapability` | boolean | `true` | modelCapability |
+| `modelsMigratedFromQuotaBadges` | boolean | `false` | modelCapability —— 内部单向标记，在采纳原 quota-badges 模型设置后自动置位；请勿手工设置。 |
 | `chatWorkspacePath` | string | `""` → `<DSH_HOME>/chat` | workspacelessChat |
 | `chatWorkspaceTitle` | string | `通用对话` | workspacelessChat |
 | `modelsApiKey` | string | `""` | modelCapability |
@@ -258,8 +259,18 @@ OpenCode Go 现在会 400 拒绝缺少 `x-opencode-session` 的请求（`{"type"
 ## 开发
 
 ```sh
-npm test          # node --test tests/*.test.js（models-core、model-sync、settings-card）
-npm run smoke     # 插件 bundle 的服务端冒烟检查
+npm test              # node --test tests/*.test.js —— 不需要宿主
+npm run smoke         # index.js + model-sync.js 的服务端冒烟（需要 peer，见下）
+npm run smoke:client  # 客户端 bundle 的离线冒烟（不需要宿主）
+```
+
+`npm test` 与 `npm run smoke:client` 自包含。`npm run smoke` 会 import `index.js`，
+而后者 import `@deepseek-ai/schemastery` 与 `@deepseek-ai/dsh-settings` 两个 peer——
+它们**不是**本包的依赖，所以要在能解析它们的检出里运行（dsh workspace，或已安装本包的 profile），
+而不是在裸 `npm install` 之后：
+
+```sh
+cd /root/deepseek-harness && node /root/dsh-plugin-toolkit/scripts/smoke.mjs
 ```
 
 | 路径 | 内容 |
@@ -269,9 +280,9 @@ npm run smoke     # 插件 bundle 的服务端冒烟检查
 | `models-core.js` | 纯合并/补全/diff 辅助函数（无网络、无 settings 访问）。 |
 | `client.js` | 浏览器半边：设置卡片与全部客户端优化。 |
 | `cordis.patch.yml` | 注入 dsh bundle patch 的组合默认值。 |
-| `tests/` | 纯核心、同步路由与设置卡片的单元测试。 |
-| `scripts/` | 冒烟、e2e 与验证脚本。 |
-| `docs/assets/` | 本 README 系列使用的 SVG 图。 |
+| `tests/` | 单元测试：纯核心、同步路由、设置卡片，以及 `index.js`（fetch 包装 + `llm/stream` 会话链）。 |
+| `scripts/` | 冒烟、e2e 与验证脚本。`smoke.mjs` / `client-smoke.mjs` 离线；`e2e-verify.mjs`（`TOOLKIT_VERIFY_URL`、`DSH_AUTH_PASS`）与 `verify-opencode-session.mjs` 需要真实宿主。 |
+| `docs/assets/` | 本 README 系列使用的 SVG 图。`docs/initiative-*.md` 是内部设计笔记，已刻意排除在 npm 包之外。 |
 
 ## 毕业规则
 

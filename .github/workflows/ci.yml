@@ -1,0 +1,32 @@
+name: CI
+
+# The project's stated principle is that a wiring regression should be
+# "continuously blocked by CI" rather than caught by eye — this is that CI.
+# It runs only the self-contained gates: `npm test` and `npm run smoke:client`
+# stub their own module table, so they need no dsh checkout and no network.
+# `npm run smoke` is deliberately absent: it imports index.js, whose
+# @deepseek-ai/* peers are host packages, not dependencies of this repo.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      - name: Unit tests (pure core, sync route, settings card, server entry)
+        run: npm test
+      - name: Client bundle smoke (offline)
+        run: npm run smoke:client
+      - name: Syntax check every runtime entry
+        run: |
+          for file in index.js model-sync.js models-core.js client.js; do
+            node --check "$file"
+          done

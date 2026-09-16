@@ -35,7 +35,7 @@ Everything is wired through public extension surfaces — settings namespaces, t
 | # | Optimization | What it does | Default | Half |
 |---|---|---|---|---|
 | 1 | [`workspacelessChat`](#workspacelesschat) | Keeps a no-project chat workspace and auto-connects it at cold start | on | client + host |
-| 2 | [`editLastMessage`](#editlastmessage) | Edit-and-resend the last user message, rewinding the model context | on | client |
+| 2 | [`editLastMessage`](#editlastmessage) | Edit-and-resend the last user message, rewinding the model context | on | client (host `session.rewrite` RPC) |
 | 3 | [`viewActivity`](#viewactivity) | Sidebar activity icon: running-first, then Today / Yesterday / Weekday / Earlier | on | client |
 | 4 | [`slashI18n`](#slashi18n) | Chinese descriptions for the `/` menu's commands and skills | on | client |
 | 5 | [`changeReport`](#changereport) | Codex-style per-turn file-change card at the turn tail | on | client |
@@ -218,12 +218,12 @@ How it works, and its bounds:
 | `modelsBaseURL` | `https://opencode.ai/zen/go/v1` | Endpoint probed for the live model listing. |
 | `modelsRouteApi` | `openai-completions` | Wire protocol pre-written onto the route. |
 | `modelsSyncPath` | `/api/toolkit/sync-models` | Same-origin explicit-sync route (no card entry point; API/scripts only; changing it needs a restart). |
-| `modelsPath` | `/api/toolkit/models` | Same-origin route listing the picker's candidates (changing it needs a restart). |
+| `modelsPath` | `/api/toolkit/models` | Same-origin route listing the picker's candidates. The server registers the path once (a change needs a restart) while the card re-reads it live, so until that restart an edit makes the card target a route the server does not serve yet. |
 | `modelsEnrichFromRegistry` | `true` | Fill missing capacities/modalities from the models.dev registry. |
 | `modelsRegistryProvider` | `opencode-go` | Provider directory inside the models.dev registry. |
 | `modelsVision` | `[]` | Model ids forced to accept image input. |
 | `modelsTextOnly` | `[]` | Model ids forced to drop image input. |
-| `modelsTimeoutSec` | `10` | Probe and registry request timeout in seconds. |
+| `modelsTimeoutSec` | `10` | Total per-request deadline in seconds for the live probe (headers **and** body). The models.dev registry reads use their own fixed 4 s budget. |
 
 > Note: this optimization carries a server route and its own config fields, so it already meets the graduation rule below; it deliberately stays in the Toolkit for now as one numbered optimization.
 
@@ -240,6 +240,7 @@ All fields live in the `toolkit` settings namespace. The composition defaults ar
 | `optimizations.changeReport` | boolean | `true` | changeReport |
 | `optimizations.opencodeSession` | boolean | `true` | opencodeSession |
 | `optimizations.modelCapability` | boolean | `true` | modelCapability |
+| `modelsMigratedFromQuotaBadges` | boolean | `false` | modelCapability — internal one-way marker set when the former quota-badges model settings were adopted; never set it by hand. |
 | `chatWorkspacePath` | string | `""` → `<DSH_HOME>/chat` | workspacelessChat |
 | `chatWorkspaceTitle` | string | `通用对话` | workspacelessChat |
 | `modelsApiKey` | string | `""` | modelCapability |
@@ -258,8 +259,19 @@ All fields live in the `toolkit` settings namespace. The composition defaults ar
 ## Development
 
 ```sh
-npm test          # node --test tests/*.test.js  (models-core, model-sync, settings-card)
-npm run smoke     # host-side smoke checks for the plugin bundle
+npm test              # node --test tests/*.test.js — no host required
+npm run smoke         # host-side smoke for index.js + model-sync.js (needs the peers, see below)
+npm run smoke:client  # offline smoke for the client bundle (no host required)
+```
+
+`npm test` and `npm run smoke:client` are self-contained. `npm run smoke` imports
+`index.js`, which imports the `@deepseek-ai/schemastery` and
+`@deepseek-ai/dsh-settings` peers; those are **not** dependencies of this
+package, so run it from a checkout where they resolve (a dsh workspace, or a
+profile with this package installed) rather than from a bare `npm install`:
+
+```sh
+cd /root/deepseek-harness && node /root/dsh-plugin-toolkit/scripts/smoke.mjs
 ```
 
 | Path | Contents |
@@ -269,9 +281,9 @@ npm run smoke     # host-side smoke checks for the plugin bundle
 | `models-core.js` | Pure merge/enrich/diff helpers (no network, no settings access). |
 | `client.js` | Browser half: the settings card and every client-side optimization. |
 | `cordis.patch.yml` | Composition defaults inserted into the dsh bundle patch. |
-| `tests/` | Unit tests for the pure core, the sync route and the settings card. |
-| `scripts/` | Smoke, e2e and verification scripts. |
-| `docs/assets/` | The SVG diagrams used by this README family. |
+| `tests/` | Unit tests: the pure core, the sync route, the settings card, and `index.js` (the fetch wrap + `llm/stream` session chain). |
+| `scripts/` | Smoke, e2e and verification scripts. `smoke.mjs` / `client-smoke.mjs` are offline; `e2e-verify.mjs` (`TOOLKIT_VERIFY_URL`, `DSH_AUTH_PASS`) and `verify-opencode-session.mjs` need a live host. |
+| `docs/assets/` | The SVG diagrams used by this README family. `docs/initiative-*.md` are internal design notes and are deliberately excluded from the npm package. |
 
 ## Graduation rules
 

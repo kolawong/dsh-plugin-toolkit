@@ -1,3 +1,6 @@
 node_modules/
 *.log
 .DS_Store
+# `npm pack` writes the tarball into the repo root; it is a build artifact.
+*.tgz
+coverage/

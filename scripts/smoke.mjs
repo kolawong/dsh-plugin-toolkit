@@ -101,7 +101,27 @@ const ctx = {
   },
 };
 
-const mod = await import("../index.js");
+// index.js imports the @deepseek-ai/schemastery and @deepseek-ai/dsh-settings
+// peers, which are HOST packages rather than dependencies of this repo. A bare
+// `npm install` here cannot resolve them, so explain that instead of surfacing
+// a raw ERR_MODULE_NOT_FOUND.
+let mod;
+try {
+  mod = await import("../index.js");
+} catch (error) {
+  if (error?.code === "ERR_MODULE_NOT_FOUND") {
+    console.error(
+      "toolkit server smoke: cannot load index.js because a host peer package is missing.\n"
+      + "  This script imports index.js, which imports @deepseek-ai/schemastery and\n"
+      + "  @deepseek-ai/dsh-settings. Run it from a checkout where those resolve, e.g.\n"
+      + "      cd /root/deepseek-harness && node /root/dsh-plugin-toolkit/scripts/smoke.mjs\n"
+      + "  (`npm test` and `npm run smoke:client` are self-contained and always run.)\n"
+      + `  Underlying error: ${String(error?.message ?? error)}`,
+    );
+    process.exit(2);
+  }
+  throw error;
+}
 equal(mod.name, "toolkit", "plugin name");
 
 // A recording fake fetch must be in place BEFORE apply(): the opencodeSession

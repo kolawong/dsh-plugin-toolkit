@@ -4,7 +4,13 @@
  * NOTE: `import "playwright"` must resolve from the working directory - run
  * from the harness repo (e.g. /root/deepseek-harness) where playwright is a
  * dev dependency, not from this package (which keeps no runtime deps).
+ *
+ * Required env: DSH_AUTH_PASS.
+ * Optional env: DSH_AUTH_USER (default "admin"), TOOLKIT_VERIFY_URL
+ * (default http://127.0.0.1:3080), TOOLKIT_CHROME (default: let Playwright
+ * resolve its own browser; set it only to pin a specific build).
  */
+import { existsSync } from "node:fs";
 import { chromium } from "playwright";
 
 const BASE = process.env.TOOLKIT_VERIFY_URL ?? "http://127.0.0.1:3080";
@@ -12,9 +18,15 @@ const user = process.env.DSH_AUTH_USER ?? "admin";
 const pass = process.env.DSH_AUTH_PASS;
 if (!pass) throw new Error("DSH_AUTH_PASS required");
 
-const EXE = process.env.TOOLKIT_CHROME
-  ?? "/root/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome";
-const browser = await chromium.launch({ executablePath: EXE });
+// Default to Playwright's own browser resolution. A hardcoded chromium build
+// path broke this script on every Playwright upgrade; if TOOLKIT_CHROME is set
+// it must at least point at something real, so a typo fails loudly here rather
+// than as an opaque launch error.
+const EXE = process.env.TOOLKIT_CHROME;
+if (EXE !== undefined && EXE !== "" && !existsSync(EXE)) {
+  throw new Error(`TOOLKIT_CHROME does not exist: ${EXE}`);
+}
+const browser = await chromium.launch(EXE === undefined || EXE === "" ? {} : { executablePath: EXE });
 const page = await browser.newPage();
 const errors = [];
 page.on("console", (msg) => { if (msg.type() === "error") errors.push(msg.text().slice(0, 200)); });
