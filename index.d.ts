@@ -74,6 +74,28 @@ export interface ToolkitConfig {
 /** Merged configuration the server reads after settings registration. */
 export interface ToolkitRuntimeConfig extends ToolkitConfig {}
 
+/**
+ * The Cordis config schema for this plugin: a schemastery validator that
+ * Cordis runs against the composition/bundle-patch and user layers at load
+ * time, filling every default.
+ *
+ * Typed loosely on purpose — it is a validator, and the resolved shape a
+ * caller actually handles is {@link ToolkitConfig}.
+ */
+export declare const Config: unknown;
+
+/**
+ * Cordis plugin activation for the server half: publishes the plugin context,
+ * installs the opencodeSession fetch wrap + llm/stream listener, then the
+ * modelCapability subsystem, and registers the `toolkit` settings namespace.
+ *
+ * Never throws on a missing host seam; a degraded install is logged as a
+ * warning so the rest of the toolkit keeps working.
+ * @param ctx - the plugin context; `settings` is declared as an injection.
+ * @param config - the resolved composition config (defaults applied by Cordis).
+ */
+export declare function apply(ctx: unknown, config?: Partial<ToolkitConfig>): void;
+
 /** One picker candidate served by the GET models route. */
 export interface RouteModelOption {
   id: string;
@@ -94,8 +116,22 @@ export interface RouteModelsPayload {
   forcedTextOnly: string[];
 }
 
+/** Failure payload of the GET models route; `code` is machine-readable. */
+export interface RouteModelsError {
+  ok: false;
+  error: { code: string; message: string };
+}
+
 /**
  * The route's known model ids for the settings-card picker: stored llm-pi-ai
  * rows unioned with the runtime's own view, deduped by id and sorted.
+ *
+ * Never probes the network. A failure — the optimization disabled, or the
+ * configured route not registered at all — is returned as
+ * {@link RouteModelsError} rather than as a successful empty list, so the card
+ * can say why it is empty.
+ *
+ * Re-exported from the package root; the implementation lives in
+ * `./model-sync.js`.
  */
-export declare function knownRouteModels(ctx: unknown): Promise<RouteModelsPayload>;
+export declare function knownRouteModels(ctx: unknown): Promise<RouteModelsPayload | RouteModelsError>;

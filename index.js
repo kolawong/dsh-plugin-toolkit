@@ -60,6 +60,13 @@ import z from "@deepseek-ai/schemastery";
 import { installSettingsSection, settingsNamespace } from "@deepseek-ai/dsh-settings";
 import { installModelCapability, rehealModelCapability } from "./model-sync.js";
 
+/**
+ * Re-exported so the `GET /api/toolkit/models` answer is reachable from the
+ * package root — `index.d.ts` declares it as part of this module's face, and a
+ * declaration the runtime does not back is worse than no declaration.
+ */
+export { knownRouteModels } from "./model-sync.js";
+
 export const name = "toolkit";
 export const inject = ["settings"];
 
