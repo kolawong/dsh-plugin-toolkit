@@ -1,0 +1,844 @@
+diff --git a/packages/api/session-controller/src/client/contract/session.ts b/packages/api/session-controller/src/client/contract/session.ts
+index 20c2985c80..d4cd368201 100644
+--- a/packages/api/session-controller/src/client/contract/session.ts
++++ b/packages/api/session-controller/src/client/contract/session.ts
+@@ -117,6 +117,19 @@ export interface ISession {
+    * @returns the normalized accepted title and its event seq, or the business error.
+    */
+   rename(title: string): Promise<RemoteResult<{ title: string; seq: SessionSeq }>>
++  /**
++   * Rewrite the last user message in place and resend it: the host journals a
++   * replacement user message that surface-replaces the target and its consumed
++   * tail, then opens a new turn answering the edited content. The session must
++   * be idle; failures land in the business error branch.
++   * @param messageSeq - seq of the durable last user message to replace.
++   * @param content - replacement content; text parts only.
++   * @returns acceptance, or the business error.
++   */
++  rewrite(
++    messageSeq: number,
++    content: readonly { readonly type: 'text'; readonly text: string }[],
++  ): Promise<RemoteResult<{ accepted: true }>>
+   /**
+    * Extend the history window backwards (older messages pagination).
+    * @returns completion; failures land in snapshot.openState/loadingOlder.
+diff --git a/packages/api/session-controller/src/client/sessions/session.ts b/packages/api/session-controller/src/client/sessions/session.ts
+index 2945f0b5c4..170a06e597 100644
+--- a/packages/api/session-controller/src/client/sessions/session.ts
++++ b/packages/api/session-controller/src/client/sessions/session.ts
+@@ -345,6 +345,27 @@ export class Session implements SessionFace {
+     return result
+   }
+ 
++  /**
++   * Rewrite the last human user message in place and resend it. The Host
++   * delivers a replacement `user/message` that the Agent journals on turn
++   * opening with a surface `replace` shadowing the target and its consumed tail
++   * (rewinding the derived model history), then opens a new turn answering the
++   * edited content — the session must be idle.
++   * @param messageSeq - seq of the durable last user message to replace.
++   * @param content - replacement content; text parts only (v1).
++   * @returns acceptance, or the business/transport error.
++   */
++  async rewrite(
++    messageSeq: number,
++    content: readonly { readonly type: 'text'; readonly text: string }[],
++  ): Promise<RemoteResult<{ accepted: true }>> {
++    return this.remote.session.rewrite({
++      sessionId: this.sessionId,
++      messageSeq,
++      content,
++    })
++  }
++
+   /**
+    * Rename: contract session.rename 1:1. On success settle the 'title'
+    * projection cell from the response's `{title, seq}` under the store's
+diff --git a/packages/api/session-controller/src/commands.ts b/packages/api/session-controller/src/commands.ts
+index f22f06fec9..6a3c661bde 100644
+--- a/packages/api/session-controller/src/commands.ts
++++ b/packages/api/session-controller/src/commands.ts
+@@ -13,7 +13,7 @@ import type {} from '@deepseek-ai/dsh-client-file-upload'
+ import {
+   ReasoningEffortId, assistantStreamChunks, createUserMessage, freezeMessage,
+ } from '@deepseek-ai/dsh-llm'
+-import type { MessageSource } from '@deepseek-ai/dsh-llm'
++import type { ContentBlock, MessageSource } from '@deepseek-ai/dsh-llm'
+ import { SessionLogOffset, SessionSeq } from '@deepseek-ai/dsh-session'
+ import type { SessionEvent, SessionHeader, SessionId, UserMessage } from '@deepseek-ai/dsh-session'
+ import { SessionQueryError, type SessionObservation } from '@deepseek-ai/dsh-session-query'
+@@ -45,6 +45,8 @@ import type {
+   SessionPromptValue,
+   SessionRenameRequest,
+   SessionRenameValue,
++  SessionRewriteRequest,
++  SessionRewriteValue,
+   SessionSelectModelRequest,
+   SessionSelectModelValue,
+   SessionUpdateQueueRequest,
+@@ -372,6 +374,72 @@ export class SessionCommandController {
+     return hasImage ? this.agents.serializeImageAdmission(agent, admit) : admit()
+   }
+ 
++  /**
++   * Rewrite the last human user message in place and resend it.
++   *
++   * Delivers a replacement user message (source `origin: 'edit'`, carrying the
++   * target message's seq in `rewriteSeq`) through the Agent inbox. The loop
++   * journals it on turn opening with a surface `replace` shadowing the target
++   * message AND every surface node after it (the consumed tail), so the next
++   * request — built from the derived surface messages — contains the edited
++   * message and nothing from the erased tail. The erased range stays physically
++   * in the append-only log (seq remains monotonic) but is hidden from the model
++   * surface and flagged to transcript renderers via `source.origin: 'edit'`.
++   *
++   * v1 constraints: the session must be idle, the target must be the LAST human
++   * user message (`data.source.kind === 'user'`) still on the model surface, and
++   * the replacement is text-only.
++   * @param request - session identity, target message seq, and replacement text.
++   * @returns acknowledgement that the rewrite was admitted.
++   */
++  async rewrite(request: SessionRewriteRequest): Promise<SessionRewriteValue> {
++    const content = rewriteTextContent(request.content)
++    const agent = await this.resolveAgent(request.sessionId)
++    if (hasApiSessionSubagentOwner(this.ctx, agent.session, agent)) {
++      throw apiSessionSubagentOwnershipError(request.sessionId)
++    }
++    if (agent.status !== 'idle') {
++      throw new RemoteError(
++        'session/agent-busy',
++        'session.rewrite requires the session to be idle',
++        { reason: 'rewrite-busy' },
++      )
++    }
++    const session = agent.session
++    const target = lastHumanUserMessage(session.snapshotEvents(), request.messageSeq)
++    if (target === undefined) {
++      throw new RemoteError(
++        'session/rewrite-unavailable',
++        'messageSeq is not the last human user message',
++        { sessionId: request.sessionId, messageSeq: request.messageSeq },
++      )
++    }
++    if (!session.surface.nodes.includes(SessionSeq(request.messageSeq))) {
++      throw new RemoteError(
++        'session/rewrite-unavailable',
++        'the target message is no longer on the model surface',
++        { sessionId: request.sessionId, messageSeq: request.messageSeq },
++      )
++    }
++    const message: UserMessage = createUserMessage({
++      content,
++      source: {
++        kind: 'user',
++        rpcId: randomUUID() as SessionRequestId,
++        origin: 'edit',
++        rewriteSeq: request.messageSeq,
++      },
++    })
++    try {
++      agent.followup(message)
++    } catch (error) {
++      throw new RemoteError('session/agent-busy', 'rewrite delivery failed', {
++        reason: String(error),
++      })
++    }
++    return { accepted: true }
++  }
++
+   /**
+    * Read one durable image after proving the Session log references it.
+    * @param request - Session and attachment identities used for authorization.
+@@ -558,6 +626,50 @@ export class SessionCommandController {
+   }
+ }
+ 
++/** Extract text blocks from browser prompt content; rewrite v1 is text-only. */
++function rewriteTextContent(
++  content: SessionRewriteRequest['content'],
++): ContentBlock[] {
++  if (content.length === 0) {
++    throw new RemoteError('gateway/bad-request', 'session.rewrite requires non-empty content', {})
++  }
++  const blocks: ContentBlock[] = []
++  for (const part of content) {
++    if (part.type !== 'text') {
++      throw new RemoteError(
++        'session/attachment-invalid',
++        'session.rewrite accepts text content only',
++        { reason: 'REWRITE_NON_TEXT' },
++      )
++    }
++    if (part.text.trim() === '') {
++      throw new RemoteError('gateway/bad-request', 'session.rewrite requires non-empty text', {})
++    }
++    blocks.push({ type: 'text', text: part.text })
++  }
++  return blocks
++}
++
++/**
++ * Locate the LAST human user message (`data.source.kind === 'user'`) in the log
++ * and confirm it is exactly `messageSeq`.
++ * @param events - full session event log.
++ * @param messageSeq - seq the rewrite targets.
++ * @returns the target event, or undefined when no human user message exists or
++ *   the last one is not at `messageSeq`.
++ */
++function lastHumanUserMessage(
++  events: readonly SessionEvent[],
++  messageSeq: number,
++): SessionEvent<'user/message'> | undefined {
++  let last: SessionEvent<'user/message'> | undefined
++  for (const event of events) {
++    if (event.type === 'user/message' && event.data.source.kind === 'user') last = event
++  }
++  if (last === undefined || last.seq !== messageSeq) return undefined
++  return last
++}
++
+ function resolvePromptFileReceipts(
+   content: SessionPromptRequest['content'],
+   stagedFile: (receiptId: FileUploadReceiptId) => FileAttachmentRef | undefined,
+diff --git a/packages/api/session-controller/src/index.ts b/packages/api/session-controller/src/index.ts
+index be6e8d7ebc..98224dcfae 100644
+--- a/packages/api/session-controller/src/index.ts
++++ b/packages/api/session-controller/src/index.ts
+@@ -47,6 +47,8 @@ import type {
+   SessionPromptValue,
+   SessionRenameRequest,
+   SessionRenameValue,
++  SessionRewriteRequest,
++  SessionRewriteValue,
+   SessionSearchRequest,
+   SessionSearchValue,
+   SessionSelectModelRequest,
+@@ -327,6 +329,18 @@ export class SessionController extends TypertRemoteService {
+     return this.commands.rename(request)
+   }
+ 
++  /**
++   * Rewrite the last human user message in place and resend it: the replacement
++   * message surface-replaces the target and its consumed tail when the Agent
++   * journals it, then the new turn answers the edited content.
++   * @param request - Session identity, target message seq, and replacement text.
++   * @returns acknowledgement that the rewrite was admitted.
++   */
++  @Remote('rewrite')
++  rewrite(request: SessionRewriteRequest): Promise<SessionRewriteValue> {
++    return this.commands.rewrite(request)
++  }
++
+   /**
+    * Fork one cold-readable completed-turn prefix into a new Session.
+    * @param request - source Session and optional event anchor.
+diff --git a/packages/api/session-controller/src/types.ts b/packages/api/session-controller/src/types.ts
+index 49c939d3f0..779fe95334 100644
+--- a/packages/api/session-controller/src/types.ts
++++ b/packages/api/session-controller/src/types.ts
+@@ -192,6 +192,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
+       readonly existingCwd?: string
+     }
+     'session/agent-busy': { readonly reason: string }
++    'session/rewrite-unavailable': { readonly sessionId: SessionId; readonly messageSeq: number }
+     'session/invalid-time-zone': { readonly value: string }
+     'session/workspace-attach-failed': { readonly sessionId: SessionId; readonly workspaceId: string }
+     'agent-preset/conflict': {
+@@ -324,6 +325,23 @@ export interface SessionPromptValue {
+   readonly accepted: true
+ }
+ 
++/** Session rewrite request — in-place replace of the last user message. */
++export interface SessionRewriteRequest {
++  readonly sessionId: SessionId
++  /**
++   * Seq of the durable `user/message` to replace. Must be the last human user
++   * message (`data.source.kind === 'user'`) still on the model surface.
++   */
++  readonly messageSeq: number
++  /** Replacement content; v1 accepts text parts only (no images). */
++  readonly content: readonly PromptContentPart[]
++}
++
++/** Receipt after the rewrite replaced the message and entered the Agent inbox. */
++export interface SessionRewriteValue {
++  readonly accepted: true
++}
++
+ /** Durable image read request. */
+ export interface SessionAttachmentRequest {
+   readonly sessionId: SessionId
+@@ -377,7 +395,7 @@ export type SessionRequestId = Branded<'session-request-id'>
+ declare module '@deepseek-ai/dsh-llm' {
+   interface MessageSourceMap {
+     /** Browser prompt correlation and optional Host-validated time zone. */
+-    'user-rpc': { kind: 'user'; rpcId: SessionRequestId; clientTimeZone?: string }
++    'user-rpc': { kind: 'user'; rpcId: SessionRequestId; clientTimeZone?: string; origin?: 'edit'; rewriteSeq?: number }
+   }
+ }
+ 
+diff --git a/packages/api/session-controller/tests/session-rewrite.host.spec.ts b/packages/api/session-controller/tests/session-rewrite.host.spec.ts
+new file mode 100644
+index 0000000000..90f2687edd
+--- /dev/null
++++ b/packages/api/session-controller/tests/session-rewrite.host.spec.ts
+@@ -0,0 +1,169 @@
++/**
++ * Session Controller rewrite (edit-the-last-user-message-and-resend) validation.
++ * The controller only validates and delivers: the replacement message enters the
++ * Agent inbox carrying `source.origin: 'edit'` plus the target seq, and the loop
++ * journals it as a surface `replace`. These cases own the rejection vocabulary
++ * and the delivered message's shape; agent-loop.spec owns the journaling.
++ */
++
++import { describe, expect, it, vi } from 'vitest'
++import { Context } from '@deepseek-ai/cordis'
++import SessionStore from '@deepseek-ai/dsh-session'
++import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
++import AgentRegistry from '@deepseek-ai/dsh-agent'
++import type { Agent, CreateAgentOptions } from '@deepseek-ai/dsh-agent'
++import { createUserMessage } from '@deepseek-ai/dsh-llm'
++import type { Session, SessionId } from '@deepseek-ai/dsh-session'
++import { createSessionTestRemote } from './test-remote.ts'
++
++const sid = (id: string): SessionId => id as SessionId
++
++/** Compose the session/projection/agent services the controller resolves through. */
++async function composed(): Promise<Context> {
++  const ctx = new Context()
++  await ctx.plugin(SessionStore)
++  await ctx.plugin(SessionProjectionRegistry)
++  await ctx.plugin(AgentRegistry)
++  ctx.agents.setFactory({
++    createAgent: (_ownerCtx: Context, options: CreateAgentOptions) => {
++      const session = ctx.sessions.create(options.sessionId)
++      return Promise.resolve({
++        agent: { id: session.id, session, status: 'idle', ctx } as Agent,
++        dispose: () => Promise.resolve(),
++      })
++    },
++    resume: () => Promise.reject(new Error('resume must not run: every source is attached')),
++  })
++  return ctx
++}
++
++/**
++ * Register one live agent whose log holds `turns` completed human turns, with a
++ * `followup` spy standing in for inbox delivery.
++ */
++async function liveAgent(
++  ctx: Context,
++  id: string,
++  turns: number,
++  status: 'idle' | 'running' = 'idle',
++): Promise<{ readonly session: Session; readonly followup: ReturnType<typeof vi.fn> }> {
++  const session = ctx.sessions.create(sid(id), { meta: { cwd: '/proj' } })
++  for (let turn = 1; turn <= turns; turn++) {
++    session.append('turn/start', { turn })
++    session.append('user/message', createUserMessage({
++      content: [{ type: 'text', text: `prompt ${String(turn)}` }],
++      source: { kind: 'user' },
++    }), { surfaceOp: 'append' })
++    session.append('turn/end', { turn, reason: { kind: 'completed' } })
++  }
++  const followup = vi.fn()
++  await ctx.agents.register({ id: session.id, session, status, ctx, followup } as unknown as Agent)
++  return { session, followup }
++}
++
++function lastHumanSeq(session: Session): number {
++  const event = session.snapshotEvents().findLast(
++    item => item.type === 'user/message' && item.data.source.kind === 'user',
++  )
++  if (event === undefined) throw new Error('fixture has no human user message')
++  return event.seq
++}
++
++const remote = (ctx: Context) => createSessionTestRemote(ctx, {
++  defaultModelSelection: () => ({ provider: 'p', model: 'm' }),
++  cwd: '/tmp',
++})
++
++describe('sessions.rewrite', () => {
++  it('delivers a replacement edit message targeting the last human user message', async () => {
++    const ctx = await composed()
++    const { session, followup } = await liveAgent(ctx, 'session-rewrite', 2)
++    const target = lastHumanSeq(session)
++
++    const response = await remote(ctx).rewrite({
++      sessionId: session.id,
++      messageSeq: target,
++      content: [{ type: 'text', text: 'edited prompt' }],
++    })
++
++    expect(response.ok).toBe(true)
++    expect(followup).toHaveBeenCalledTimes(1)
++    const delivered = followup.mock.calls[0]?.[0] as { content: unknown; source: unknown }
++    expect(delivered.content).toEqual([{ type: 'text', text: 'edited prompt' }])
++    expect(delivered.source).toMatchObject({ kind: 'user', origin: 'edit', rewriteSeq: target })
++  })
++
++  it('rejects a target that is not the last human user message', async () => {
++    const ctx = await composed()
++    const { session, followup } = await liveAgent(ctx, 'session-rewrite-not-last', 2)
++    const firstTurn = session.snapshotEvents().find(
++      item => item.type === 'user/message' && item.data.source.kind === 'user',
++    )
++    if (firstTurn === undefined) throw new Error('fixture has no first user message')
++
++    const response = await remote(ctx).rewrite({
++      sessionId: session.id,
++      messageSeq: firstTurn.seq,
++      content: [{ type: 'text', text: 'edited' }],
++    })
++
++    expect(response.ok).toBe(false)
++    if (!response.ok) {
++      expect(response.error).toMatchObject({
++        code: 'session/rewrite-unavailable',
++        details: { sessionId: session.id, messageSeq: firstTurn.seq },
++      })
++    }
++    expect(followup).not.toHaveBeenCalled()
++  })
++
++  it('rejects a running session with agent-busy', async () => {
++    const ctx = await composed()
++    const { session, followup } = await liveAgent(ctx, 'session-rewrite-busy', 1, 'running')
++
++    const response = await remote(ctx).rewrite({
++      sessionId: session.id,
++      messageSeq: lastHumanSeq(session),
++      content: [{ type: 'text', text: 'edited' }],
++    })
++
++    expect(response.ok).toBe(false)
++    if (!response.ok) expect(response.error.code).toBe('session/agent-busy')
++    expect(followup).not.toHaveBeenCalled()
++  })
++
++  it('rejects non-text replacement content with the rewrite reason', async () => {
++    const ctx = await composed()
++    const { session, followup } = await liveAgent(ctx, 'session-rewrite-image', 1)
++
++    const response = await remote(ctx).rewrite({
++      sessionId: session.id,
++      messageSeq: lastHumanSeq(session),
++      content: [{ type: 'image', attachment: 'a' as never }],
++    })
++
++    expect(response.ok).toBe(false)
++    if (!response.ok) {
++      expect(response.error).toMatchObject({
++        code: 'session/attachment-invalid',
++        details: { reason: 'REWRITE_NON_TEXT' },
++      })
++    }
++    expect(followup).not.toHaveBeenCalled()
++  })
++
++  it('rejects whitespace-only replacement text as a bad request', async () => {
++    const ctx = await composed()
++    const { session, followup } = await liveAgent(ctx, 'session-rewrite-blank', 1)
++
++    const response = await remote(ctx).rewrite({
++      sessionId: session.id,
++      messageSeq: lastHumanSeq(session),
++      content: [{ type: 'text', text: '   ' }],
++    })
++
++    expect(response.ok).toBe(false)
++    if (!response.ok) expect(response.error.code).toBe('gateway/bad-request')
++    expect(followup).not.toHaveBeenCalled()
++  })
++})
+diff --git a/packages/api/session-controller/tests/test-remote.ts b/packages/api/session-controller/tests/test-remote.ts
+index 721288f7dc..5a3ed39fec 100644
+--- a/packages/api/session-controller/tests/test-remote.ts
++++ b/packages/api/session-controller/tests/test-remote.ts
+@@ -53,6 +53,8 @@ import type {
+   SessionPromptValue,
+   SessionRenameRequest,
+   SessionRenameValue,
++  SessionRewriteRequest,
++  SessionRewriteValue,
+   SessionSearchRequest,
+   SessionSearchValue,
+   SessionSelectModelRequest,
+@@ -70,6 +72,7 @@ export interface TestSessionRemote {
+   selectModel(request: SessionSelectModelRequest): Promise<RemoteResult<SessionSelectModelValue>>
+   modelCatalog(): Promise<RemoteResult<ModelCatalog>>
+   rename(request: SessionRenameRequest): Promise<RemoteResult<SessionRenameValue>>
++  rewrite(request: SessionRewriteRequest): Promise<RemoteResult<SessionRewriteValue>>
+   fork(request: SessionForkRequest): Promise<RemoteResult<SessionForkValue>>
+   prompt(request: SessionPromptRequest, signal?: AbortSignal): Promise<RemoteResult<SessionPromptValue>>
+   attachment(request: SessionAttachmentRequest): Promise<RemoteResult<SessionAttachmentValue>>
+@@ -344,6 +347,7 @@ export function createSessionTestRemote(
+     selectModel: request => remoteResult(() => direct.selectModel(request)),
+     modelCatalog: () => remoteResult(() => direct.modelCatalog()),
+     rename: request => remoteResult(() => direct.rename(request)),
++    rewrite: request => remoteResult(() => direct.rewrite(request)),
+     fork: request => remoteResult(() => direct.fork(request)),
+     prompt: (request, signal = new AbortController().signal) => remoteResult(
+       () => direct.prompt(request, signal),
+diff --git a/packages/client/ui-chat/src/client/conversation-nodes/message.ts b/packages/client/ui-chat/src/client/conversation-nodes/message.ts
+index 823bbe3c93..ec9fe61262 100644
+--- a/packages/client/ui-chat/src/client/conversation-nodes/message.ts
++++ b/packages/client/ui-chat/src/client/conversation-nodes/message.ts
+@@ -40,13 +40,20 @@ function isCompactionCheckpoint(event: Parameters<ConversationNodeDefinition['ma
+   return source.kind === 'plugin' && source.plugin === 'compact'
+ }
+ 
++/** An in-place edit rewrite: `user/message` surface replacement marked `origin: 'edit'`. */
++function isEditRewrite(event: Parameters<ConversationNodeDefinition['match']>[0]): boolean {
++  if (event.type !== 'user/message') return false
++  const source = event.data.source as { kind?: unknown; origin?: unknown }
++  return source.kind === 'user' && source.origin === 'edit'
++}
++
+ /** User, steering, and injected-context message classification Definition. */
+ export const messageDefinition: ConversationNodeDefinition<MessageNode> = {
+   kind: 'input-message',
+   target: 'chat',
+   match: event => event.type === 'user/message'
+-    && isAppendSurfaceEvent(event)
+     && !isCompactionCheckpoint(event)
++    && (isAppendSurfaceEvent(event) || isEditRewrite(event))
+     ? { id: String(event.data.id), role: 'start' }
+     : null,
+   start: (_context, match, reader) => {
+diff --git a/packages/client/ui-conversation/src/client/conversation/assembly.ts b/packages/client/ui-conversation/src/client/conversation/assembly.ts
+index a6d453c65b..a74fdb3b98 100644
+--- a/packages/client/ui-conversation/src/client/conversation/assembly.ts
++++ b/packages/client/ui-conversation/src/client/conversation/assembly.ts
+@@ -2,7 +2,7 @@
+ import { Service, type Context } from '@deepseek-ai/cordis'
+ import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+ import type {
+-  ISessions, SessionBinding, SessionEventSource, SessionEventWindow,
++  ISessions, SessionBinding, SessionEventLikeEntry, SessionEventSource, SessionEventWindow,
+ } from '@deepseek-ai/dsh-api-session-controller/client'
+ import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session/types'
+ import {
+@@ -95,7 +95,7 @@ class BoundConversation implements ConversationBinding {
+ 
+   private replace(window: SessionEventWindow): void {
+     this.revision = window.revision
+-    this.publish(this.assembler.replaceWindow(window.entries, window.hasMore))
++    this.publish(this.assembler.replaceWindow(rewriteFiltered(window.entries), window.hasMore))
+   }
+ 
+   private accept(window: SessionEventWindow): void {
+@@ -110,6 +110,12 @@ class BoundConversation implements ConversationBinding {
+         this.publish(this.assembler.prepend(window.change.entries, window.hasMore))
+         return
+       case 'append': {
++        // An in-place edit rewrite must hide the erased tail retroactively, so
++        // the whole window rebuilds with the suppressed range filtered out.
++        if (window.change.entries.some(entry => isEditRewriteEvent(entry.event))) {
++          this.replace(window)
++          return
++        }
+         let publication: ConversationPublication = 'none'
+         for (const event of window.change.entries) {
+           const next = this.assembler.append(event)
+@@ -165,6 +171,50 @@ class BoundConversation implements ConversationBinding {
+   }
+ }
+ 
++/** Whether one session event is an in-place edit rewrite marker. */
++function isEditRewriteEvent(event: SessionEventLikeEntry['event']): boolean {
++  if (event.type !== 'user/message') return false
++  const source = event.data.source as { kind?: unknown; origin?: unknown }
++  return source.kind === 'user' && source.origin === 'edit'
++}
++
++/** Turn/step boundaries kept when suppressing an edit rewrite's erased tail. */
++function isBoundaryType(type: string): boolean {
++  return type === 'turn/start' || type === 'turn/end'
++    || type === 'step/start' || type === 'step/end'
++}
++
++/**
++ * Suppress the erased tail of every in-place edit rewrite in a window.
++ *
++ * Each rewrite `user/message` (surface `replace` from `startSeq` to its own seq)
++ * erases the consumed tail: the edited message and everything after it are
++ * hidden from the transcript. Turn/step boundaries inside the range are KEPT
++ * so the failed turn collapses into an invisible empty turn and the following
++ * turn — which journals the rewrite message — builds normally. The erase is
++ * window-safe: only events inside (startSeq, rewriteSeq) are affected.
++ * @param entries - the complete loaded event window.
++ * @returns the window with suppressed events removed (same array when none).
++ */
++function rewriteFiltered(entries: readonly SessionEventLikeEntry[]): readonly SessionEventLikeEntry[] {
++  const rewrites = entries.filter(entry => isEditRewriteEvent(entry.event))
++  if (rewrites.length === 0) return entries
++  const suppressed = new Set<number>()
++  for (const entry of rewrites) {
++    if (entry.event.type !== 'user/message') continue
++    const op = entry.event.surfaceOp
++    if (op === undefined || op === 'append') continue
++    for (const candidate of entries) {
++      const seq = candidate.event.seq
++      if (seq < op.startSeq || seq >= entry.event.seq) continue
++      if (isBoundaryType(candidate.event.type)) continue
++      suppressed.add(seq)
++    }
++  }
++  if (suppressed.size === 0) return entries
++  return entries.filter(entry => !suppressed.has(entry.event.seq))
++}
++
+ interface BindingRecord {
+   readonly source: SessionBinding
+   readonly binding: BoundConversation
+diff --git a/packages/client/ui-conversation/tests/conversation-registry.client.spec.ts b/packages/client/ui-conversation/tests/conversation-registry.client.spec.ts
+index 2d3a003756..20b4a1da50 100644
+--- a/packages/client/ui-conversation/tests/conversation-registry.client.spec.ts
++++ b/packages/client/ui-conversation/tests/conversation-registry.client.spec.ts
+@@ -54,6 +54,7 @@ function fakeSession(): SessionFace {
+     updateQueue: () => Promise.reject(new Error('unused fake Session operation')),
+     cancel: () => Promise.reject(new Error('unused fake Session operation')),
+     rename: () => Promise.reject(new Error('unused fake Session operation')),
++    rewrite: () => Promise.reject(new Error('unused fake Session operation')),
+     loadOlder: () => Promise.reject(new Error('unused fake Session operation')),
+     loadThrough: () => Promise.reject(new Error('unused fake Session operation')),
+     command: () => Promise.reject(new Error('unused fake Session operation')),
+diff --git a/packages/core/agent-loop/src/agent.ts b/packages/core/agent-loop/src/agent.ts
+index 4ea7593551..7701579528 100644
+--- a/packages/core/agent-loop/src/agent.ts
++++ b/packages/core/agent-loop/src/agent.ts
+@@ -27,7 +27,7 @@ import { deepFreeze } from '@deepseek-ai/dsh-util-values'
+ import type { Scope } from '@deepseek-ai/dsh-scope'
+ import { createScope } from '@deepseek-ai/dsh-scope'
+ import type { EpochHeader, RequestContext, Session, SessionId, TurnEndReason, UserMessage } from '@deepseek-ai/dsh-session'
+-import { canonicalHeader, headerEquals } from '@deepseek-ai/dsh-session'
++import { SessionSeq, canonicalHeader, headerEquals } from '@deepseek-ai/dsh-session'
+ import { joinContextSections, renderContextSections, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
+ import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
+ import type {} from '@deepseek-ai/dsh-session-projection'
+@@ -373,7 +373,11 @@ export class ReactLoopAgent implements Agent {
+       }
+       if (firstAttempt) {
+         for (const message of decision.messages) {
+-          this.session.append('user/message', message, { surfaceOp: 'append' })
++          // A rewrite-delivered message (source.origin === 'edit') is journaled
++          // by the loop itself as a surface `replace` shadowing the edited tail;
++          // on restart replay the durable event already exists and must never
++          // be appended twice.
++          if (!this.alreadyJournaled(message)) this.appendUserMessage(message)
+         }
+       }
+       firstAttempt = false
+@@ -550,6 +554,48 @@ export class ReactLoopAgent implements Agent {
+     return { config, ...preparedCall === undefined ? {} : { preparedCall } }
+   }
+ 
++  /**
++   * Whether a claimed rewrite-delivered message is already durably journaled
++   * (restart replay): ordinary prompt messages never collide with the log.
++   * @param message - claimed UserMessage.
++   * @returns true when a user/message with this id exists in the log.
++   */
++  private alreadyJournaled(message: UserMessage): boolean {
++    const origin = (message.source as { origin?: 'edit' }).origin
++    if (origin !== 'edit') return false
++    return this.session.snapshotEvents().some(
++      entry => entry.type === 'user/message' && entry.data.id === message.id,
++    )
++  }
++
++  /**
++   * Journal one claimed message. An edit rewrite lands as a surface `replace`
++   * shadowing the target message and every surface node after it — the derived
++   * model history rewind for in-place edits. A defensive fallback appends
++   * plainly when the target left the surface (it was validated by the rewrite
++   * RPC and cannot move while the session is idle).
++   * @param message - claimed UserMessage to append.
++   */
++  private appendUserMessage(message: UserMessage): void {
++    const source = message.source as { origin?: 'edit'; rewriteSeq?: number }
++    if (source.origin === 'edit' && source.rewriteSeq !== undefined) {
++      const surface = this.session.surface.nodes
++      const target = SessionSeq(source.rewriteSeq)
++      const startIdx = surface.indexOf(target)
++      if (startIdx !== -1) {
++        const shadowed = surface.slice(startIdx)
++        // oxlint-disable-next-line typescript/no-non-null-assertion -- shadowed contains the target (startIdx !== -1).
++        const end = shadowed[shadowed.length - 1]!
++        this.session.append('user/message', message, {
++          surfaceOp: { op: 'replace', startSeq: target, endSeq: end },
++          sourceEventSeqs: shadowed,
++        })
++        return
++      }
++    }
++    this.session.append('user/message', message, { surfaceOp: 'append' })
++  }
++
+   /** Log the resolved envelope and derive a frozen request from the admitted surface. */
+   private buildRequest(
+     config: LlmCallConfig,
+diff --git a/packages/core/agent-loop/tests/edit-rewrite.spec.ts b/packages/core/agent-loop/tests/edit-rewrite.spec.ts
+new file mode 100644
+index 0000000000..f5d10b0275
+--- /dev/null
++++ b/packages/core/agent-loop/tests/edit-rewrite.spec.ts
+@@ -0,0 +1,118 @@
++/**
++ * Agent-loop journaling of an in-place edit rewrite (`source.origin === 'edit'`).
++ * The rewrite RPC only validates and delivers; the loop owns the surface
++ * `replace` that rewinds the derived model history. These cases pin both halves:
++ * the journaled replacement event and the request the next turn actually sends.
++ */
++
++import { createUserMessage } from '@deepseek-ai/dsh-llm'
++import { describe, expect, it } from 'vitest'
++import { Context } from '@deepseek-ai/cordis'
++import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
++import AgentLoop from '@deepseek-ai/dsh-agent-loop'
++import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
++import LlmRuntime, { type GenerateOptions } from '@deepseek-ai/dsh-llm'
++import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
++import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
++import ToolRuntime from '@deepseek-ai/dsh-tools'
++import { MockAdapter, textResponse } from './mock-adapter.ts'
++
++async function harness(adapter: MockAdapter): Promise<Context> {
++  const ctx = new Context()
++  await ctx.plugin(LlmRuntime)
++  await ctx.plugin(SessionStore)
++  await ctx.plugin(SessionProjectionRegistry)
++  await ctx.plugin(SystemPrompt)
++  await ctx.plugin(ToolRuntime)
++  await ctx.plugin(AgentRegistry)
++  await ctx.plugin(AgentLoop, { agents: [] })
++  ctx.llm.registerAdapter(['mock'], adapter)
++  return ctx
++}
++
++function send(agent: Agent, text: string): void {
++  agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
++}
++
++/** Every text block a captured request carried, in order. */
++function requestText(request: GenerateOptions): string[] {
++  const out: string[] = []
++  for (const message of request.messages) {
++    const content = message.content as readonly { readonly type?: string; readonly text?: string }[]
++    for (const block of content) {
++      if (block.type === 'text' && typeof block.text === 'string') out.push(block.text)
++    }
++  }
++  return out
++}
++
++describe('Agent edit rewrite', () => {
++  it('journals the replacement as a surface replace and rewinds the request history', async () => {
++    const adapter = new MockAdapter([textResponse('first answer'), textResponse('second answer')])
++    const ctx = await harness(adapter)
++    const agent = await ctx.agentLoop.create(SessionId('rewrite'), { provider: 'mock', model: 'mock' })
++
++    send(agent, 'original question')
++    await agent.whenIdle()
++    const original = agent.session.snapshotEvents().findLast(
++      event => event.type === 'user/message' && event.data.source.kind === 'user',
++    )
++    if (original === undefined) throw new Error('first turn journaled no user message')
++    const tailEnd = agent.session.surface.nodes.at(-1)
++
++    agent.followup(createUserMessage({
++      content: [{ type: 'text', text: 'edited question' }],
++      source: { kind: 'user', origin: 'edit', rewriteSeq: original.seq },
++    }))
++    await agent.whenIdle()
++
++    // The journaled replacement is a surface replace from the edited message to
++    // the consumed tail, carrying origin: 'edit'.
++    const replacement = agent.session.snapshotEvents().findLast(event => event.type === 'user/message')
++    expect(replacement?.type === 'user/message' && replacement.surfaceOp).toMatchObject({
++      op: 'replace',
++      startSeq: original.seq,
++      endSeq: tailEnd,
++    })
++    expect(replacement?.data.source).toMatchObject({ origin: 'edit', rewriteSeq: original.seq })
++
++    // The next request's derived history equals "the user always sent the edit":
++    // the old question and the first answer it consumed are gone.
++    expect(adapter.requests).toHaveLength(2)
++    const history = requestText(adapter.requests[1]!)
++    expect(history).toContain('edited question')
++    expect(history).not.toContain('original question')
++    expect(history).not.toContain('first answer')
++  })
++
++  it('appends an ordinary followup after a rewrite normally', async () => {
++    const adapter = new MockAdapter([
++      textResponse('first answer'),
++      textResponse('second answer'),
++      textResponse('third answer'),
++    ])
++    const ctx = await harness(adapter)
++    const agent = await ctx.agentLoop.create(SessionId('rewrite-then-send'), { provider: 'mock', model: 'mock' })
++
++    send(agent, 'original question')
++    await agent.whenIdle()
++    const original = agent.session.snapshotEvents().findLast(
++      event => event.type === 'user/message' && event.data.source.kind === 'user',
++    )
++    if (original === undefined) throw new Error('first turn journaled no user message')
++    agent.followup(createUserMessage({
++      content: [{ type: 'text', text: 'edited question' }],
++      source: { kind: 'user', origin: 'edit', rewriteSeq: original.seq },
++    }))
++    await agent.whenIdle()
++
++    send(agent, 'follow-up question')
++    await agent.whenIdle()
++
++    const appended = agent.session.snapshotEvents().findLast(event => event.type === 'user/message')
++    expect(appended?.type === 'user/message' && appended.surfaceOp).toBe('append')
++    const history = requestText(adapter.requests[2]!)
++    expect(history).toEqual(expect.arrayContaining(['edited question', 'follow-up question']))
++    expect(history).not.toContain('original question')
++  })
++})
+diff --git a/packages/llm/llm/src/message.ts b/packages/llm/llm/src/message.ts
+index 05af6bae3e..63a65d792f 100644
+--- a/packages/llm/llm/src/message.ts
++++ b/packages/llm/llm/src/message.ts
+@@ -100,7 +100,13 @@ export type ContextFormed =
+  * Merge-extensible sum type — plugins add their own `kind`s.
+  */
+ export interface MessageSourceMap {
+-  user: { kind: 'user' }
++  /**
++   * Direct human prompt. `origin: 'edit'` marks a rewrite-delivered user
++   * message: the Agent journals it with a surface `replace` shadowing the
++   * edited message (`rewriteSeq`) and its consumed tail, so consumers can
++   * distinguish an in-place rewrite from an ordinary appended message.
++   */
++  user: { kind: 'user'; origin?: 'edit'; rewriteSeq?: number }
+   plugin: { kind: 'plugin'; plugin: string } & ContextFormed
+   model: ModelMessageSource
+   tool: ToolMessageSource
+diff --git a/packages/test-support/client-runtime/src/sessions.ts b/packages/test-support/client-runtime/src/sessions.ts
+index 419e155af7..d0e2268f86 100644
+--- a/packages/test-support/client-runtime/src/sessions.ts
++++ b/packages/test-support/client-runtime/src/sessions.ts
+@@ -167,6 +167,14 @@ export class FixtureSession implements SessionFace {
+   rename(): never {
+     throw new Error(`test session "${this.sessionId}": rename is not stubbed — supply it on the fixture's session face`)
+   }
++
++  /**
++   * Fail-loud stub; supply `rewrite` on the fixture's session face to exercise it.
++   * @returns never — always throws.
++   */
++  rewrite(): never {
++    throw new Error(`test session "${this.sessionId}": rewrite is not stubbed — supply it on the fixture's session face`)
++  }
+ }
+ 
+ /** One live test session: fixture-derived stores plus its minted scope state. */

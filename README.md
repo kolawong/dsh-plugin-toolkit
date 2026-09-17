@@ -114,6 +114,8 @@ Retry a failed answer without copy-pasting and without polluting the model's con
 
 This needs host support for the `session.rewrite` RPC (a small addition to this repo's dsh checkout). On hosts without it, the button still shows but reports that rewriting is unsupported. The client transcript erases the old message and its failed turn; turn boundaries are kept so the failed turn collapses into an invisible empty turn. Requires an idle session (a running turn rejects with `agent-busy`); only the last human user message is editable, text-only.
 
+The host extension lives in this repo as `host/session-rewrite.patch`. A dsh upgrade drops it, so **re-apply it after every upgrade**: `node scripts/apply-host-patch.mjs`, then `pnpm run build:lib && pnpm run build:web` and restart the harness. Verify the live behavior with `node scripts/e2e-verify-rewrite.mjs`.
+
 | Config | Default | Meaning |
 |---|---|---|
 | `optimizations.editLastMessage` | `true` | Edit-and-resend button on the last user message. |

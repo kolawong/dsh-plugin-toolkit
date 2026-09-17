@@ -1,8 +1,12 @@
 # 立项方案：编辑上一条消息并「原位重发」
 
-> 状态：设计已收敛，M1/M3 服务端实现中。第二个 toolkit 优化 `editLastMessage`，
+> 状态：设计已收敛，M1–M7 已完成并在线上验证。第二个 toolkit 优化 `editLastMessage`，
 > 重发语义为**原位替换**：编辑上一条用户消息后，该消息之后的旧内容从会话中真正收回，
 > 模型下一条回复看到的上下文是「改后的话 + 全新回合」。
+>
+> ⚠️ host 侧改动不在本插件内，**每次 dsh 升级后必须重放**：
+> `node scripts/apply-host-patch.mjs`（补丁在 `host/session-rewrite.patch`）。
+> 2026-09-17 曾因升级丢失过一次，原因与恢复见文末第 7 节。
 
 ## 1. 背景与诉求
 
@@ -109,6 +113,7 @@ compaction 的"旧内容留在上面"语义不受影响（其标记不带 origin
 | M5 | 插件按钮 + 设置卡片 + locale + README（含中文） | `dsh-plugin-toolkit` | ✅ |
 | M6 | 单测（7 例）+ 重建 bundle + 重启 + 线上 e2e | scripts | ✅ |
 | M7 | 规范整改（去掉 ui-chat 深度 import，气泡自渲染） | `client.js`、`package.json` | ✅ |
+| M8 | 升级丢失恢复 + 补丁持久化（`host/session-rewrite.patch`、`scripts/apply-host-patch.mjs`、`scripts/e2e-verify-rewrite.mjs`） | 本仓库 + dsh checkout | ✅ |
 
 ## 6. 风险与缓释
 
@@ -119,3 +124,61 @@ compaction 的"旧内容留在上面"语义不受影响（其标记不带 origin
   区间外不受影响）。
 - **改造面在运行的 harness 上**：改完需重建 + 重启 `deepseek-harness.service`，
   执行节奏已与用户确认（立即开始）。
+
+## 7. 升级丢失与重放（2026-09-17）
+
+**症状**：编辑上一条用户消息后点「发送」，内联红字报「当前 host 不支持改写」。
+
+**根因**：host 侧 12 个文件的改动（M1/M3/M4）一直只是 `/root/deepseek-harness`
+工作区的未提交修改。2026-08-31 的 `dsh-upgrade` 把它 auto-stash 成
+`stash@{1}`（同日的 `f310404d96` 是同一实现的 WIP 提交），此后 master 被 reset /
+`pull --ff-only` 到上游；反复重建最终在 2026-09-15 22:28 用干净 master 的产物覆盖了
+旧 lib，2026-09-16 16:56 的 `systemctl restart` 让运行中的进程换成了没有
+`session.rewrite` 的版本。客户端的 `session.rewrite` 是同一补丁的 M4 部分，所以
+新旧不匹配时表现为「有铅笔、点发送报 404 / 不支持」。与 approval policy 改动无关。
+
+**恢复来源**：`stash@{1}`（"dsh-upgrade auto-stash 2026-08-31 10:08:32"）与
+悬空提交 `f310404d96`。
+
+**本次重放目标**：harness master `0d1f50007f`（2026-09-15）。
+
+**重放时的必要适配**（上游两周漂移）：
+
+- `SurfaceOp.replace` 字段改名：`{op:'replace', start, end}` → `{op:'replace', startSeq, endSeq}`（`agent.ts`、`assembly.ts`）。
+- `session.events` → `session.snapshotEvents()`（`agent.ts`、`commands.ts`）。
+- 客户端 REST 结果类型 `ClientResult`/`toSessionResult`/`transportResult` → `RemoteResult`（`session-controller` client）。
+- `createUserMessage` 的 content 需要可变 `ContentBlock[]`。
+- 错误码走当前 `RemoteError` 词表：`session/agent-busy`、新增 `session/rewrite-unavailable`、`gateway/bad-request`、`session/attachment-invalid`；旧的 `reject(...)`/`rejectFailure(...)` 辅助已不存在。
+- `packages/api/session-controller/tests/fake-api.client.ts` 已不存在，改为扩展 `tests/test-remote.ts` 的直连 Remote face。
+- 新增回归用例：`packages/api/session-controller/tests/session-rewrite.host.spec.ts`（5 例，校验/投递）与 `packages/core/agent-loop/tests/edit-rewrite.spec.ts`（2 例，surface replace + 派生请求真正回退）。
+
+**升级后重放清单**：
+
+1. `node scripts/apply-host-patch.mjs`（默认 `/root/deepseek-harness`，可用 `DSH_CHECKOUT` 或参数覆盖；已应用则直接退出 0）。
+2. `pnpm run build:lib && pnpm run build:web`（在 dsh checkout 内）。
+3. `systemctl restart deepseek-harness.service`。
+4. `DSH_AUTH_USER=kola DSH_AUTH_PASS=… node scripts/e2e-verify-rewrite.mjs`（Playwright 真机验证：发消息 → 编辑 → 重发 → 断言旧文本消失、新文本出现、无错误提示）。
+
+> 升级插件的流程是 `git stash → git pull --ff-only → git stash pop`；当 pop 因上游改动冲突时，
+> 工作区会留下冲突标记且改动仍留在 stash 里（2026-08-31 就是这样丢的）。此时先
+> `git checkout -- <冲突文件>` 回到干净状态，再跑第 1 步的 `apply-host-patch.mjs`
+> （补丁带 `--3way`，能落到新的上游形态上）。
+
+**验证状态（2026-09-17 已完成）**：
+
+- 单测：`packages/api/session-controller` + `packages/core/agent-loop` 共 1169 例全绿，含新增 7 例
+  （`session-rewrite.host.spec.ts` 5 例、`edit-rewrite.spec.ts` 2 例）；toolkit 自身 `npm test` 65 例全绿。
+- 真机 e2e：`node scripts/e2e-verify-rewrite.mjs`（需 `DSH_AUTH_PASS`）连续三次 **PASS**。
+  实测证据：`POST /api/session/rewrite` 返回 `{ok:true,value:{accepted:true}}`；提交后编辑器关闭、
+  旧的用户气泡与旧 assistant 回复从转录中消失、编辑后的气泡出现（`ORIGINAL holders: []`）。
+  旧气泡能被擦除本身就证明 host 落盘的是 surface `replace`（客户端只在
+  `surfaceOp.op === 'replace'` 时才抑制旧事件），与 `edit-rewrite.spec.ts` 的「派生请求历史
+  只含改后内容」互为证据。探测文案显式禁止调用工具，运行不留副作用文件。
+- 日志：`/tmp/rewrite-e2e.log`（成功运行）、`/tmp/rewrite-verify-runner.log`（重启编排）。
+
+**一个记录在案的次要现象**：
+
+- 会话标题（会话头部面包屑 `*_crumb`、侧栏行 `*_summaryText`）来自自动生成的标题，
+  改写后可能仍显示旧文案（改写只替换对话消息，不重算标题）。首版 e2e 把整页文本
+  当作转录断言，于是把标题残留误判为「旧消息没被擦除」（2026-09-17 15:53 的那次失败即此），
+  现已把断言限定在转录区域（排除标题 chrome），连续两次 PASS。

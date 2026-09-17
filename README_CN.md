@@ -114,6 +114,8 @@ systemctl restart deepseek-harness.service  # 或你的 profile 重启方式
 
 这需要 host 支持 `session.rewrite` RPC（本仓库 dsh checkout 的小幅新增）。在不支持的 host 上按钮仍会显示，但会提示不支持改写。客户端转录会擦除旧消息与其失败回合；回合边界保留，使失败回合折叠为不可见的空回合。需要会话空闲（运行中会以 `agent-busy` 拒绝）；仅最后一条人类用户消息可编辑，且仅限纯文本。
 
+host 侧改动以补丁形式存放在本仓库 `host/session-rewrite.patch`。dsh 升级会把它丢掉，**每次升级后都要重放**：`node scripts/apply-host-patch.mjs`，然后在 dsh checkout 里 `pnpm run build:lib && pnpm run build:web` 并重启 harness。真机验证用 `node scripts/e2e-verify-rewrite.mjs`。
+
 | 配置 | 默认 | 含义 |
 |---|---|---|
 | `optimizations.editLastMessage` | `true` | 上一条用户消息上的编辑并重发按钮。 |

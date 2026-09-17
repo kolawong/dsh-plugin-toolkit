@@ -65,7 +65,9 @@
   "scripts": {
     "test": "node --test tests/*.test.js",
     "smoke": "node scripts/smoke.mjs",
-    "smoke:client": "node scripts/client-smoke.mjs"
+    "smoke:client": "node scripts/client-smoke.mjs",
+    "host:apply": "node scripts/apply-host-patch.mjs",
+    "host:verify": "node scripts/e2e-verify-rewrite.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=4.0.0",
