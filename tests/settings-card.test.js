@@ -262,3 +262,69 @@ test("every Tooltip call passes the label prop the primitive expects", () => {
     assert.doesNotMatch(snippet, /\bcontent:/, "Tooltip must not pass content");
   }
 });
+
+test("registers into plugins.bundle.config, plugins.row.config, and settings.plugin.item", () => {
+  stubDocument();
+  const captured = [];
+  const scope = {
+    getSnapshot: () => ({ status: "ready", writable: true, value: {} }),
+    set: async () => {},
+    subscribe: () => () => {},
+  };
+  const ctx = {
+    locale: { register() {} },
+    on() {},
+    effect(fn) { fn?.(); },
+    inject() {},
+    settingsScope: { bind: () => scope },
+    slots: {
+      inject(name, generator) {
+        const iterator = generator();
+        for (let step = iterator.next(); !step.done; step = iterator.next()) void step.value;
+      },
+      register(spec, component) {
+        captured.push({ spec, component });
+        return () => {};
+      },
+    },
+  };
+  const require = (name) => {
+    if (name === "react") return ReactStub;
+    if (name === "react/jsx-runtime") return { jsx, jsxs: jsx };
+    if (name === "@deepseek-ai/dsh-client-ui-primitives") {
+      return new Proxy({}, { get: () => (props) => ({ type: "stub", props: props ?? {} }) });
+    }
+    throw new Error("unexpected require: " + name);
+  };
+  const exportsObj = loadFactory()(require);
+  exportsObj.apply(ctx);
+
+  const bundleConfig = captured.find((entry) => entry.spec.name === "plugins.bundle.config");
+  assert.ok(bundleConfig, "registers plugins.bundle.config slot");
+  assert.equal(bundleConfig.spec.key, "dsh-plugin-toolkit", "bundle config keyed by bundle name");
+
+  const rowConfig = captured.find((entry) => entry.spec.name === "plugins.row.config");
+  assert.ok(rowConfig, "registers plugins.row.config slot");
+  assert.equal(rowConfig.spec.key, "dsh-plugin-toolkit#toolkit", "row config keyed by <bundle>#<rowId>");
+
+  const legacyItem = captured.find((entry) => entry.spec.name === "settings.plugin.item");
+  assert.ok(legacyItem, "registers legacy settings.plugin.item slot");
+  assert.equal(legacyItem.spec.key, "toolkit");
+
+  // Summary view returns one-liner string
+  resetHooks();
+  const summary = bundleConfig.component({ t, view: "summary" });
+  assert.equal(summary, "cardDesc", "summary view returns cardDesc");
+
+  // Page view is expanded by default
+  resetHooks();
+  const pageTree = renderComponent(bundleConfig.component, {
+    ...bundleConfig.spec.inject(),
+    t,
+    view: "page",
+    useToolkitSettings: () => ({ status: "ready", writable: true, value: { optimizations: { modelCapability: true } } }),
+  });
+  const modelSubCard = propsByAriaLabel(pageTree, "optModelsTitle");
+  assert.ok(modelSubCard, "page view starts expanded with subcards visible");
+});
+

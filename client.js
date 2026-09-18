@@ -2255,7 +2255,7 @@ window.__ModuleLoader__.load({
       const writable = snap.writable === true;
       const opts = value.optimizations ?? {};
 
-      const [expanded, setExpanded] = useState(false);
+      const [expanded, setExpanded] = useState(props.view === "page");
       const [modalOpt, setModalOpt] = useState(null);
       const [saving, setSaving] = useState(false);
       const [savedTick, setSavedTick] = useState(false);
@@ -2460,6 +2460,10 @@ window.__ModuleLoader__.load({
           setModelsDirty(false);
         })();
       };
+
+      if (props.view === "summary") {
+        return t("cardDesc");
+      }
 
       const enabledCount = OPTIMIZATIONS.filter((opt) => opts[opt.key] === true).length;
       const activeOpt = modalOpt === null ? null : OPTIMIZATIONS.find((opt) => opt.key === modalOpt);
@@ -3418,10 +3422,62 @@ window.__ModuleLoader__.load({
         if (registration !== undefined) yield registration;
       });
 
-      // Settings card on the Plugins page. The slot entry's key must equal
-      // the registered settings namespace: the plugins page pairs cards to
-      // namespaces by this exact string.
+      // Settings card on the Plugins page.
+      // DSH 0.1.6+ moved settings to the Plugins page:
+      //   - `plugins.bundle.config` (key: 'dsh-plugin-toolkit') for bundle-level config
+      //   - `plugins.row.config` (key: 'dsh-plugin-toolkit#toolkit') for row-level config
+      // Older DSH (< 0.1.6) used `settings.plugin.item` in the Settings dialog.
       if (scope !== undefined) {
+        const injectSettings = () => ({
+          hooks: { toolkitSettings: scope },
+          toolkitSet: (field, value) => scope.set(field, value),
+          // Atomic multi-field write when the host scope exposes mutate().
+          toolkitMutate: typeof scope.mutate === "function"
+            ? (ops) => scope.mutate(ops)
+            : undefined,
+          toolkitModels: async () => {
+            // The route is configurable server-side (modelsPath); read the
+            // resolved value live and fall back to the shipped default.
+            const snap = scope.getSnapshot?.();
+            const configured = snap?.status === "ready" ? snap.value?.modelsPath : undefined;
+            const path = typeof configured === "string" && configured !== ""
+              ? configured
+              : MODELS_PATH;
+            const response = await fetch(path);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            return response.json();
+          },
+        });
+
+        // 1. DSH 0.1.6+ Plugin Manager: bundle-level configuration
+        ctx.slots.inject("plugins.bundle.config", function* () {
+          const registration = safeSlotRegister(ctx,
+            {
+              name: "plugins.bundle.config",
+              key: "dsh-plugin-toolkit",
+              locale: NS,
+              inject: injectSettings,
+            },
+            ToolkitSettingsCard,
+          );
+          if (registration !== undefined) yield registration;
+        });
+
+        // 2. DSH 0.1.6+ Plugin Manager: row-level configuration
+        ctx.slots.inject("plugins.row.config", function* () {
+          const registration = safeSlotRegister(ctx,
+            {
+              name: "plugins.row.config",
+              key: "dsh-plugin-toolkit#toolkit",
+              locale: NS,
+              inject: injectSettings,
+            },
+            ToolkitSettingsCard,
+          );
+          if (registration !== undefined) yield registration;
+        });
+
+        // 3. Legacy DSH (< 0.1.6) Settings modal slot
         ctx.slots.inject("settings.plugin.item", function* () {
           const registration = safeSlotRegister(ctx,
             {
@@ -3430,26 +3486,7 @@ window.__ModuleLoader__.load({
               id: "toolkit",
               order: 30,
               locale: NS,
-              inject: () => ({
-                hooks: { toolkitSettings: scope },
-                toolkitSet: (field, value) => scope.set(field, value),
-                // Atomic multi-field write when the host scope exposes mutate().
-                toolkitMutate: typeof scope.mutate === "function"
-                  ? (ops) => scope.mutate(ops)
-                  : undefined,
-                toolkitModels: async () => {
-                  // The route is configurable server-side (modelsPath); read the
-                  // resolved value live and fall back to the shipped default.
-                  const snap = scope.getSnapshot?.();
-                  const configured = snap?.status === "ready" ? snap.value?.modelsPath : undefined;
-                  const path = typeof configured === "string" && configured !== ""
-                    ? configured
-                    : MODELS_PATH;
-                  const response = await fetch(path);
-                  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                  return response.json();
-                },
-              }),
+              inject: injectSettings,
             },
             ToolkitSettingsCard,
           );
