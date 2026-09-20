@@ -148,9 +148,9 @@ const commandsSvc = makeNamespaceService(commandsResult);
 const skillsSvc = makeNamespaceService(skillsResult);
 
 // Drive the two ctx.inject callbacks.
-const workspaceCallback = injected.find((row) => row.names.join() === "workspaces,sessions");
+const workspaceCallback = injected.find((row) => row.names.includes("workspaces") && row.names.includes("sessions"));
 ok(workspaceCallback, "workspacelessChat wiring present");
-workspaceCallback.cb({ workspaces: {}, sessions: {} });
+workspaceCallback.cb({ workspaces: {}, sessions: {}, uiWorkspace: { openSession: () => {} } });
 const remoteCallback = injected.find((row) => row.names.join() === "remote.commands,remote.skills");
 ok(remoteCallback, "slashI18n wiring present");
 remoteCallback.cb({ "remote.commands": commandsSvc, "remote.skills": skillsSvc });

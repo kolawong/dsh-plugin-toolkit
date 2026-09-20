@@ -59,6 +59,7 @@ import { join } from "node:path";
 import z from "@deepseek-ai/schemastery";
 import { installSettingsSection, settingsNamespace } from "@deepseek-ai/dsh-settings";
 import { installModelCapability, rehealModelCapability } from "./model-sync.js";
+import { installSlashI18nApi } from "./slash-i18n-api.js";
 
 /**
  * Re-exported so the `GET /api/toolkit/models` answer is reachable from the
@@ -329,6 +330,13 @@ export function apply(ctx, config) {
     installModelCapability(ctx, currentConfig);
   } catch (error) {
     logger?.warn?.("[toolkit] modelCapability install:", error);
+  }
+
+  // slashI18n: custom translations persistence & AI translation endpoints
+  try {
+    installSlashI18nApi(ctx, logger);
+  } catch (error) {
+    logger?.warn?.("[toolkit] slashI18n API install:", error);
   }
 
   try {

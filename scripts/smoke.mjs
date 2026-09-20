@@ -158,11 +158,12 @@ mod.apply(ctx, {
   modelsApiKey: "sk-smoke-test",
 });
 
-// The modelCapability half waits on its own services, and the settings section
-// keeps waiting on settings alone.
-equal(injectCalls.length, 2, "two inject waits: model capability + settings section");
+// The modelCapability half waits on its own services, the slash-i18n API waits
+// on webServer alone, and the settings section keeps waiting on settings alone.
+equal(injectCalls.length, 3, "three inject waits: model capability + slash-i18n API + settings section");
 equal(injectCalls[0].join(","), "settings,llm,webServer", "modelCapability waits on settings+llm+webServer");
-equal(injectCalls[1].join(","), "settings", "settings section waits on settings");
+equal(injectCalls[1].join(","), "webServer", "slash-i18n API waits on webServer");
+equal(injectCalls[2].join(","), "settings", "settings section waits on settings");
 
 equal(registrations.length, 1, "one namespace registration");
 equal(registrations[0].ns, "toolkit", "namespace key equals the card key");

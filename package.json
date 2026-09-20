@@ -55,6 +55,7 @@
     "model-sync.js",
     "models-core.js",
     "client.js",
+    "slash-i18n-api.js",
     "index.d.ts",
     "cordis.patch.yml",
     "README.md",

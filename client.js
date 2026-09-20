@@ -225,6 +225,30 @@ window.__ModuleLoader__.load({
       modelsPickRemove: "移除 {id}",
       modelsPickCount: "已选 {count}",
       modelsSave: "保存",
+      slashI18nTitle: "命令与技能翻译管理",
+      slashI18nSearchPlaceholder: "搜索命令名或描述关键词…",
+      slashI18nFilterAll: "全部",
+      slashI18nFilterUntranslated: "仅未翻译",
+      slashI18nFilterCommand: "命令",
+      slashI18nFilterSkill: "技能",
+      slashI18nStats: "共 {total} 项 · {translated} 项已翻译 · {untranslated} 项未翻译",
+      slashI18nBatchAi: "一键 AI 翻译",
+      slashI18nBatchAiOptimize: "一键翻译并归纳优化",
+      slashI18nBatchAiLoading: "AI 翻译中 ({n})…",
+      slashI18nBatchAiOptimizeLoading: "AI 归纳中 ({n})…",
+      slashI18nSave: "保存翻译",
+      slashI18nSavedNotice: "翻译已保存并即时生效",
+      slashI18nColName: "名称 / 类型",
+      slashI18nColOriginal: "英文原描述",
+      slashI18nColTranslation: "中文翻译 (可自由微调)",
+      slashI18nPlaceholderTranslation: "请输入中文翻译或点击 AI 操作…",
+      slashI18nAiButton: "AI 翻译",
+      slashI18nAiOptimize: "翻译并归纳",
+      slashI18nResetButton: "恢复默认",
+      slashI18nTagBuiltin: "内置",
+      slashI18nTagCustom: "自定义",
+      slashI18nTagLong: "长文案",
+      slashI18nEmptyFilter: "没有匹配的命令或技能",
       reportTitle: "已编辑 {count} 个文件",
       reportTitleOne: "已编辑 1 个文件",
       reportMore: "再显示 {count} 个文件",
@@ -328,6 +352,30 @@ window.__ModuleLoader__.load({
       modelsPickRemove: "Remove {id}",
       modelsPickCount: "{count} selected",
       modelsSave: "Save",
+      slashI18nTitle: "Slash Commands & Skills Translations",
+      slashI18nSearchPlaceholder: "Search command or description...",
+      slashI18nFilterAll: "All",
+      slashI18nFilterUntranslated: "Untranslated",
+      slashI18nFilterCommand: "Commands",
+      slashI18nFilterSkill: "Skills",
+      slashI18nStats: "{total} total · {translated} translated · {untranslated} untranslated",
+      slashI18nBatchAi: "Batch AI Translate",
+      slashI18nBatchAiOptimize: "Translate & Summarize",
+      slashI18nBatchAiLoading: "Translating ({n})...",
+      slashI18nBatchAiOptimizeLoading: "Summarizing ({n})...",
+      slashI18nSave: "Save Translations",
+      slashI18nSavedNotice: "Translations saved and active immediately",
+      slashI18nColName: "Name / Type",
+      slashI18nColOriginal: "Original Description",
+      slashI18nColTranslation: "Chinese Translation (Editable)",
+      slashI18nPlaceholderTranslation: "Enter translation or click AI action...",
+      slashI18nAiButton: "AI Translate",
+      slashI18nAiOptimize: "Summarize",
+      slashI18nResetButton: "Reset",
+      slashI18nTagBuiltin: "Built-in",
+      slashI18nTagCustom: "Custom",
+      slashI18nTagLong: "Long",
+      slashI18nEmptyFilter: "No matching commands or skills",
       reportTitle: "{count} files edited",
       reportTitleOne: "1 file edited",
       reportMore: "Show {count} more files",
@@ -705,10 +753,12 @@ window.__ModuleLoader__.load({
      * @param {any} scope - bound settings scope, or undefined when unavailable.
      * @returns {() => void} disposer for the effect teardown.
      */
-    function installActivityView({ workspaces, sessions }, scope) {
+    function installActivityView(services, scope, ctx) {
       if (typeof document === "undefined" || typeof document.querySelector !== "function") {
         return () => {};
       }
+      const workspaces = services?.workspaces ?? services?.get?.("workspaces");
+      const sessions = services?.sessions ?? services?.get?.("sessions");
 
       const readStored = (key, fallback) => {
         try { const stored = localStorage.getItem(key); return stored === null ? fallback : stored; }
@@ -794,7 +844,16 @@ window.__ModuleLoader__.load({
         const wSnap = workspaces?.list?.getSnapshot?.();
         if (!sSnap || !wSnap) return;
 
-        const currentId = sSnap.current;
+        let currentId = sSnap.current;
+        if (!currentId) {
+          try {
+            const raw = localStorage.getItem("dsh.sessions.current");
+            if (raw) {
+              const parsed = JSON.parse(raw);
+              if (parsed?.sessionId) currentId = parsed.sessionId;
+            }
+          } catch {}
+        }
         const archived = new Set(wSnap.archivedSessionIds || []);
         const workspaceBySession = new Map();
         if (Array.isArray(wSnap.items)) {
@@ -931,7 +990,39 @@ window.__ModuleLoader__.load({
             e.preventDefault();
             e.stopPropagation();
             const sid = row.getAttribute("data-session-id");
-            if (sid && sessions?.open) {
+            if (!sid) return;
+
+            // Immediate visual selection
+            container.querySelectorAll(".tk-activity-row.selected").forEach((r) => r.classList.remove("selected"));
+            row.classList.add("selected");
+
+            // 1. Try injected uiWorkspace service
+            let nav = undefined;
+            try {
+              nav = services?.uiWorkspace ?? services?.get?.("uiWorkspace") ?? ctx?.uiWorkspace ?? ctx?.get?.("uiWorkspace");
+            } catch {}
+
+            // 2. Fallback: retrieve onOpen from React fiber on native sidebar session rows
+            if (!nav?.openSession) {
+              try {
+                const nativeRow = document.querySelector('[class*="_sessionRow"]');
+                if (nativeRow) {
+                  const fiberKey = Object.keys(nativeRow).find((k) => k.startsWith("__reactFiber"));
+                  let cur = fiberKey ? nativeRow[fiberKey] : null;
+                  while (cur) {
+                    if (typeof cur.memoizedProps?.onOpen === "function") {
+                      nav = { openSession: cur.memoizedProps.onOpen };
+                      break;
+                    }
+                    cur = cur.return;
+                  }
+                }
+              } catch {}
+            }
+
+            if (nav?.openSession) {
+              nav.openSession(sid);
+            } else if (sessions?.open) {
               sessions.open(sid);
             }
           };
@@ -1146,6 +1237,117 @@ window.__ModuleLoader__.load({
         "用 taskctl 管理 DSH Taskboard / DeepSeek Harness 的任务。适用于任务板 issue 编号、状态同步、评论或项目任务跟踪。",
     };
 
+    /** Live in-memory custom and AI translations. */
+    let customSlashZh = {};
+
+    /** Discovered commands and skills registry: map from description to item metadata. */
+    const discoveredRegistry = new Map();
+
+    function recordDiscoveredItem(item) {
+      if (!item || !item.description) return;
+      const desc = item.description;
+      const existing = discoveredRegistry.get(desc);
+      if (existing) {
+        discoveredRegistry.set(desc, { ...existing, ...item });
+      } else {
+        discoveredRegistry.set(desc, item);
+      }
+    }
+
+    // Pre-populate with known default catalog items:
+    recordDiscoveredItem({ name: "/compact", description: "Compact older conversation history", type: "command" });
+    recordDiscoveredItem({ name: "/feedback", description: "record feedback about this session", type: "command", hint: "<text>" });
+    recordDiscoveredItem({ name: "/feedback [hint]", description: "<text>", type: "hint" });
+    recordDiscoveredItem({ name: "/goal", description: "set or view the goal for a long-running task", type: "command" });
+    recordDiscoveredItem({ name: "/permission", description: "Switch the permission preset (sandbox mode + approval policy)", type: "command", hint: "<preset>" });
+    recordDiscoveredItem({ name: "/permission [hint]", description: "<preset>", type: "hint" });
+    recordDiscoveredItem({ name: "/plan", description: "Enter or leave plan mode", type: "command" });
+    recordDiscoveredItem({ name: "/download-logs", description: "Download this Session log as a ZIP archive", type: "command" });
+    recordDiscoveredItem({
+      name: "hindsight-coding-agent",
+      description: "How this machine's Hindsight coding-agent memory works — the plugin behind the 🧠 banner. Use when the user says \"store/remember this in hindsight\", asks what the memory/knowledge pages are, wants to configure per-repo memory (disable, rename banks, git depth), or something memory-related looks broken.",
+      type: "skill",
+    });
+    recordDiscoveredItem({
+      name: "manage-taskboard",
+      description: "Manage DSH Taskboard / DeepSeek Harness work with taskctl. Use for taskboard issue IDs, status sync, comments, or project task tracking.",
+      type: "skill",
+    });
+
+    /** Load saved custom translations from backend. */
+    async function loadCustomSlashTranslations() {
+      if (typeof window === "undefined" || !window.location) return;
+      try {
+        const res = await fetch("/api/toolkit/slash-translations");
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.ok) {
+            if (data.translations && typeof data.translations === "object") {
+              customSlashZh = { ...customSlashZh, ...data.translations };
+            }
+            if (Array.isArray(data.discovered)) {
+              for (const item of data.discovered) {
+                recordDiscoveredItem(item);
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("[toolkit] failed to load custom slash translations:", err);
+      }
+    }
+    void loadCustomSlashTranslations();
+
+    let globalRemoteServices = undefined;
+
+    async function probeRemoteCatalog() {
+      if (globalRemoteServices?.["remote.commands"]) {
+        try {
+          const res = await globalRemoteServices["remote.commands"].list();
+          if (res?.ok && Array.isArray(res.value)) {
+            for (const cmd of res.value) {
+              if (cmd?.description) {
+                recordDiscoveredItem({
+                  name: cmd.name || "",
+                  description: cmd.description,
+                  type: "command",
+                  hint: cmd.input?.hint,
+                });
+              }
+              if (cmd?.input?.hint) {
+                recordDiscoveredItem({
+                  name: (cmd.name || "") + " [hint]",
+                  description: cmd.input.hint,
+                  type: "hint",
+                });
+              }
+            }
+          }
+        } catch {}
+      }
+      if (globalRemoteServices?.["remote.skills"]) {
+        try {
+          const res = await globalRemoteServices["remote.skills"].list();
+          const skillsList = res?.ok ? (Array.isArray(res.value) ? res.value : res.value?.skills) : undefined;
+          if (Array.isArray(skillsList)) {
+            for (const sk of skillsList) {
+              if (sk?.description) {
+                recordDiscoveredItem({
+                  name: sk.name || "",
+                  description: sk.description,
+                  type: "skill",
+                });
+              }
+            }
+          }
+        } catch {}
+      }
+    }
+
+    function getDiscoveredItemsList() {
+      return Array.from(discoveredRegistry.values());
+    }
+
     /** Symbol flags marking an already-wrapped namespace service method. */
     const SLASH_I18N_FLAG = Symbol.for("dsh-plugin-toolkit.slashI18n.wrapped");
     /** cordis exposes the raw service behind a traceable proxy under this symbol. */
@@ -1191,6 +1393,10 @@ window.__ModuleLoader__.load({
      */
     function slashZhText(text, scope) {
       if (typeof text !== "string" || !slashI18nActive(scope)) return text;
+      if (Object.prototype.hasOwnProperty.call(customSlashZh, text)) {
+        const val = customSlashZh[text];
+        if (typeof val === "string" && val.trim() !== "") return val;
+      }
       return Object.prototype.hasOwnProperty.call(SLASH_ZH, text) ? SLASH_ZH[text] : text;
     }
 
@@ -1208,6 +1414,21 @@ window.__ModuleLoader__.load({
       if (!Array.isArray(value)) return result;
       const rows = value.map((command) => {
         if (command === null || typeof command !== "object") return command;
+        if (command.description) {
+          recordDiscoveredItem({
+            name: command.name || "",
+            description: command.description,
+            type: "command",
+            hint: command.input?.hint,
+          });
+        }
+        if (command.input?.hint) {
+          recordDiscoveredItem({
+            name: (command.name || "") + " [hint]",
+            description: command.input.hint,
+            type: "hint",
+          });
+        }
         const next = { ...command, description: slashZhText(command.description, scope) };
         if (next.input !== undefined && next.input !== null && typeof next.input === "object") {
           next.input = { ...next.input, hint: slashZhText(next.input.hint, scope) };
@@ -1228,11 +1449,19 @@ window.__ModuleLoader__.load({
       if (result === null || typeof result !== "object" || result.ok !== true) return result;
       const value = result.value;
       if (value === null || typeof value !== "object" || !Array.isArray(value.skills)) return result;
-      const skills = value.skills.map((skill) => (
-        skill !== null && typeof skill === "object"
-          ? { ...skill, description: slashZhText(skill.description, scope) }
-          : skill
-      ));
+      const skills = value.skills.map((skill) => {
+        if (skill !== null && typeof skill === "object") {
+          if (skill.description) {
+            recordDiscoveredItem({
+              name: skill.name || "",
+              description: skill.description,
+              type: "skill",
+            });
+          }
+          return { ...skill, description: slashZhText(skill.description, scope) };
+        }
+        return skill;
+      });
       return { ...result, value: { ...value, skills } };
     }
 
@@ -1330,6 +1559,8 @@ window.__ModuleLoader__.load({
       // Refresh the live binding first: this runs on every apply, and the
       // wrappers installed by an earlier apply must follow the new scope.
       slashScope = scope;
+      globalRemoteServices = services;
+      void probeRemoteCatalog();
       const commands = wrapNamespaceMethod(services["remote.commands"], "list", rewriteCommandsResult);
       const skills = wrapNamespaceMethod(services["remote.skills"], "list", rewriteSkillsResult);
       if (commands || skills) {
@@ -1772,7 +2003,9 @@ window.__ModuleLoader__.load({
      * @param {any} scope - bound settings scope, or undefined when unavailable.
      * @returns {() => void} disposer for the effect teardown.
      */
-    function installWorkspacelessChat({ workspaces, sessions }, scope) {
+    function installWorkspacelessChat(services, scope, ctx) {
+      const workspaces = services?.workspaces ?? services?.get?.("workspaces");
+      const sessions = services?.sessions ?? services?.get?.("sessions");
       // Every path below assumes these two list faces. Checking them up front
       // keeps a differently-shaped host from throwing inside the effect
       // factory — which would take down the whole install path — and matches
@@ -1887,7 +2120,12 @@ window.__ModuleLoader__.load({
           if (disposed) return;
           attempts = 0;
           if (sessions.list.getSnapshot().current === undefined) {
-            sessions.open(sessionId);
+            const nav = services?.uiWorkspace ?? services?.get?.("uiWorkspace") ?? ctx?.uiWorkspace ?? ctx?.get?.("uiWorkspace");
+            if (nav?.openSession) {
+              nav.openSession(sessionId);
+            } else if (sessions?.open) {
+              sessions.open(sessionId);
+            }
             console.info(`[toolkit] connected default chat workspace (${view.path})`);
           }
         } catch (error) {
@@ -2230,6 +2468,817 @@ window.__ModuleLoader__.load({
             ],
           }),
           jsx("span", { style: MKP.hint, children: hint }),
+        ],
+      });
+    }
+
+    function IconSparkles(props) {
+      const size = props?.size || 13;
+      return jsx("svg", {
+        width: size,
+        height: size,
+        viewBox: "0 0 16 16",
+        fill: "currentColor",
+        "aria-hidden": "true",
+        style: { display: "inline-block", verticalAlign: "-0.15em", ...props?.style },
+        children: jsx("path", {
+          d: "M7.53 1.282a.5.5 0 0 1 .94 0l.974 2.825a3.5 3.5 0 0 0 2.158 2.158l2.825.974a.5.5 0 0 1 0 .94l-2.825.974a3.5 3.5 0 0 0-2.158 2.158l-.974 2.825a.5.5 0 0 1-.94 0l-.974-2.825a3.5 3.5 0 0 0-2.158-2.158L1.547 9.12a.5.5 0 0 1 0-.94l2.825-.974A3.5 3.5 0 0 0 6.53 5.048L7.53 1.282zM12.5 10.5a.3.3 0 0 1 .565 0l.27.784a1.5 1.5 0 0 0 .925.925l.784.27a.3.3 0 0 1 0 .565l-.784.27a1.5 1.5 0 0 0-.925.925l-.27.784a.3.3 0 0 1-.565 0l-.27-.784a1.5 1.5 0 0 0-.925-.925l-.784-.27a.3.3 0 0 1 0-.565l.784-.27a1.5 1.5 0 0 0 .925-.925l.27-.784z",
+        }),
+      });
+    }
+
+    function IconCompress(props) {
+      const size = props?.size || 13;
+      return jsxs("svg", {
+        width: size,
+        height: size,
+        viewBox: "0 0 16 16",
+        fill: "none",
+        stroke: "currentColor",
+        strokeWidth: "1.3",
+        strokeLinecap: "round",
+        strokeLinejoin: "round",
+        "aria-hidden": "true",
+        style: { display: "inline-block", verticalAlign: "-0.15em", ...props?.style },
+        children: [
+          jsx("path", { d: "M2 3.5h12" }),
+          jsx("path", { d: "M2 7.5h7" }),
+          jsx("path", { d: "M2 11.5h12" }),
+          jsx("path", { d: "M11 6.5l2 1-2 1" }),
+        ],
+      });
+    }
+
+    function IconReset(props) {
+      const size = props?.size || 13;
+      return jsxs("svg", {
+        width: size,
+        height: size,
+        viewBox: "0 0 16 16",
+        fill: "none",
+        stroke: "currentColor",
+        strokeWidth: "1.3",
+        strokeLinecap: "round",
+        strokeLinejoin: "round",
+        "aria-hidden": "true",
+        style: { display: "inline-block", verticalAlign: "-0.15em", ...props?.style },
+        children: [
+          jsx("path", { d: "M2.5 8a5.5 5.5 0 1 0 1.6-3.9L2 6" }),
+          jsx("path", { d: "M2 2.5V6h3.5" }),
+        ],
+      });
+    }
+
+    function IconCheck(props) {
+      const size = props?.size || 13;
+      return jsx("svg", {
+        width: size,
+        height: size,
+        viewBox: "0 0 16 16",
+        fill: "none",
+        stroke: "currentColor",
+        strokeWidth: "1.5",
+        strokeLinecap: "round",
+        strokeLinejoin: "round",
+        "aria-hidden": "true",
+        style: { display: "inline-block", verticalAlign: "-0.15em", ...props?.style },
+        children: jsx("path", { d: "M3.5 8.5l3 3 6-7" }),
+      });
+    }
+
+    /**
+     * SlashI18n management panel: lists all detected slash commands and skills,
+     * allows inline editing/fine-tuning of Chinese descriptions, batch or single-item
+     * AI translation via existing system credentials, and live persistence.
+     */
+    function SlashI18nManager(props) {
+      const { t, writable, onClose } = props;
+      const [search, setSearch] = useState("");
+      const [filter, setFilter] = useState("all");
+      const [drafts, setDrafts] = useState(() => ({ ...customSlashZh }));
+      const [items, setItems] = useState(() => getDiscoveredItemsList());
+      const [isDirty, setIsDirty] = useState(false);
+      const [saving, setSaving] = useState(false);
+      const [savedTick, setSavedTick] = useState(false);
+      const [error, setError] = useState(null);
+      const [batchTranslating, setBatchTranslating] = useState(false);
+      const [batchOptimizing, setBatchOptimizing] = useState(false);
+      const [translatingKeys, setTranslatingKeys] = useState(() => new Set());
+      const [optimizingKeys, setOptimizingKeys] = useState(() => new Set());
+
+      useEffect(() => {
+        let active = true;
+        void (async () => {
+          try {
+            await probeRemoteCatalog();
+            await loadCustomSlashTranslations();
+            if (active) {
+              setDrafts((prev) => ({ ...customSlashZh, ...prev }));
+              setItems(getDiscoveredItemsList());
+            }
+          } catch (e) {
+            console.warn("[toolkit] error syncing slash catalog:", e);
+          }
+        })();
+        return () => { active = false; };
+      }, []);
+
+      const totalCount = items.length;
+      const untranslatedItems = items.filter((it) => {
+        const desc = it.description || "";
+        const currentZh = (drafts[desc] !== undefined ? drafts[desc] : (SLASH_ZH[desc] || "")).trim();
+        return currentZh === "";
+      });
+      const untranslatedCount = untranslatedItems.length;
+      const translatedCount = totalCount - untranslatedCount;
+
+      const longItems = items.filter((it) => (it.description || "").length > 50);
+      const optimizeCandidates = untranslatedItems.length > 0
+        ? untranslatedItems
+        : longItems;
+
+      const filteredItems = items.filter((it) => {
+        const desc = it.description || "";
+        const name = it.name || "";
+        const currentZh = (drafts[desc] !== undefined ? drafts[desc] : (SLASH_ZH[desc] || "")).trim();
+        const isUntranslated = currentZh === "";
+
+        if (filter === "untranslated" && !isUntranslated) return false;
+        if (filter === "command" && it.type !== "command" && it.type !== "hint") return false;
+        if (filter === "skill" && it.type !== "skill") return false;
+
+        if (search.trim()) {
+          const q = search.toLowerCase();
+          const matchName = name.toLowerCase().includes(q);
+          const matchDesc = desc.toLowerCase().includes(q);
+          const matchZh = currentZh.toLowerCase().includes(q);
+          if (!matchName && !matchDesc && !matchZh) return false;
+        }
+        return true;
+      });
+
+      const handleSingleAiAction = async (item, mode = "translate") => {
+        const desc = item.description;
+        if (!desc) return;
+        setError(null);
+        if (mode === "optimize") {
+          setOptimizingKeys((prev) => new Set(prev).add(desc));
+        } else {
+          setTranslatingKeys((prev) => new Set(prev).add(desc));
+        }
+        try {
+          const res = await fetch("/api/toolkit/translate-slash", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              items: [{ name: item.name, text: desc }],
+              mode,
+            }),
+          });
+          const data = await res.json();
+          const trans = data.translations || {};
+          const matchedVal = trans[desc] || trans[item.name];
+          if (data.ok && matchedVal) {
+            setDrafts((prev) => ({ ...prev, [desc]: matchedVal }));
+            setIsDirty(true);
+          } else if (data.ok && Object.keys(trans).length > 0) {
+            const firstVal = Object.values(trans)[0];
+            setDrafts((prev) => ({ ...prev, [desc]: firstVal }));
+            setIsDirty(true);
+          } else {
+            setError(data.error || "AI 处理失败");
+          }
+        } catch (err) {
+          setError(err?.message || String(err));
+        } finally {
+          if (mode === "optimize") {
+            setOptimizingKeys((prev) => {
+              const next = new Set(prev);
+              next.delete(desc);
+              return next;
+            });
+          } else {
+            setTranslatingKeys((prev) => {
+              const next = new Set(prev);
+              next.delete(desc);
+              return next;
+            });
+          }
+        }
+      };
+
+      const handleBatchAiAction = async (mode = "translate") => {
+        const targetList = mode === "optimize" ? optimizeCandidates : untranslatedItems;
+        if (targetList.length === 0) return;
+        setError(null);
+        if (mode === "optimize") {
+          setBatchOptimizing(true);
+        } else {
+          setBatchTranslating(true);
+        }
+        try {
+          const payloadItems = targetList.map((it) => ({
+            name: it.name,
+            text: it.description,
+          }));
+          const res = await fetch("/api/toolkit/translate-slash", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              items: payloadItems,
+              mode,
+            }),
+          });
+          const data = await res.json();
+          if (data.ok && data.translations) {
+            setDrafts((prev) => {
+              const next = { ...prev };
+              for (const it of targetList) {
+                const text = it.description;
+                const val = data.translations[text] || data.translations[it.name];
+                if (val) next[text] = val;
+              }
+              return { ...next, ...data.translations };
+            });
+            setIsDirty(true);
+          } else {
+            setError(data.error || "AI 批量处理失败");
+          }
+        } catch (err) {
+          setError(err?.message || String(err));
+        } finally {
+          if (mode === "optimize") {
+            setBatchOptimizing(false);
+          } else {
+            setBatchTranslating(false);
+          }
+        }
+      };
+
+      const handleResetItem = (item) => {
+        const desc = item.description;
+        const defaultVal = SLASH_ZH[desc] || "";
+        setDrafts((prev) => ({ ...prev, [desc]: defaultVal }));
+        setIsDirty(true);
+      };
+
+      const handleSave = async () => {
+        setError(null);
+        setSaving(true);
+        try {
+          const res = await fetch("/api/toolkit/slash-translations", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              translations: drafts,
+              discovered: items,
+            }),
+          });
+          const data = await res.json();
+          if (data.ok) {
+            customSlashZh = { ...customSlashZh, ...drafts };
+            setIsDirty(false);
+            setSavedTick(true);
+            setTimeout(() => setSavedTick(false), 2500);
+          } else {
+            setError(data.error || "保存失败");
+          }
+        } catch (err) {
+          setError(err?.message || String(err));
+        } finally {
+          setSaving(false);
+        }
+      };
+
+      const chipStyle = (active) => ({
+        height: "26px",
+        boxSizing: "border-box",
+        padding: "0 10px",
+        borderRadius: "6px",
+        fontSize: "12px",
+        font: "inherit",
+        cursor: "pointer",
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        color: active ? "var(--dsw-alias-label-primary, #f3f4f6)" : "var(--dsw-alias-label-tertiary, #9ca3af)",
+        background: active ? "var(--dsw-alias-bg-layer-3, #2a2a2a)" : "transparent",
+        border: active ? "1px solid var(--dsw-alias-border-l1, #444)" : "1px solid transparent",
+        transition: "all .12s",
+      });
+
+      const isAnyBatchRunning = batchTranslating || batchOptimizing;
+
+      return jsxs("div", {
+        style: {
+          display: "flex",
+          flexDirection: "column",
+          gap: "10px",
+          padding: "10px 16px 14px",
+          borderTop: "1px solid var(--dsw-alias-border-l2, #333)",
+        },
+        children: [
+          jsxs("div", {
+            style: { display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" },
+            children: [
+              jsx("input", {
+                type: "text",
+                value: search,
+                onChange: (e) => setSearch(e.target.value),
+                placeholder: t("slashI18nSearchPlaceholder"),
+                style: {
+                  flex: 1,
+                  minWidth: "160px",
+                  height: "32px",
+                  boxSizing: "border-box",
+                  padding: "0 12px",
+                  fontSize: "12.5px",
+                  borderRadius: "6px",
+                  background: "var(--dsw-alias-bg-layer-1, #141414)",
+                  border: "1px solid var(--dsw-alias-border-l2, #333)",
+                  color: "var(--dsw-alias-label-primary, #f3f4f6)",
+                },
+              }),
+              jsxs("div", {
+                style: {
+                  display: "inline-flex",
+                  alignItems: "center",
+                  height: "32px",
+                  boxSizing: "border-box",
+                  gap: "3px",
+                  background: "var(--dsw-alias-bg-layer-1, #141414)",
+                  padding: "2px",
+                  borderRadius: "8px",
+                  border: "1px solid var(--dsw-alias-border-l2, #333)",
+                },
+                children: [
+                  jsx("button", {
+                    type: "button",
+                    onClick: () => setFilter("all"),
+                    style: chipStyle(filter === "all"),
+                    children: t("slashI18nFilterAll"),
+                  }),
+                  jsx("button", {
+                    type: "button",
+                    onClick: () => setFilter("untranslated"),
+                    style: chipStyle(filter === "untranslated"),
+                    children: jsxs("span", {
+                      children: [
+                        t("slashI18nFilterUntranslated"),
+                        untranslatedCount > 0 ? jsx("span", {
+                          style: {
+                            marginLeft: "4px",
+                            padding: "1px 5px",
+                            borderRadius: "10px",
+                            background: "#b91c1c",
+                            color: "#fff",
+                            fontSize: "10px",
+                            fontWeight: "bold",
+                          },
+                          children: untranslatedCount,
+                        }) : null,
+                      ],
+                    }),
+                  }),
+                  jsx("button", {
+                    type: "button",
+                    onClick: () => setFilter("command"),
+                    style: chipStyle(filter === "command"),
+                    children: t("slashI18nFilterCommand"),
+                  }),
+                  jsx("button", {
+                    type: "button",
+                    onClick: () => setFilter("skill"),
+                    style: chipStyle(filter === "skill"),
+                    children: t("slashI18nFilterSkill"),
+                  }),
+                ],
+              }),
+            ],
+          }),
+          jsxs("div", {
+            style: {
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              fontSize: "12px",
+              color: "var(--dsw-alias-label-tertiary, #9ca3af)",
+              flexWrap: "wrap",
+              gap: "8px",
+            },
+            children: [
+              jsx("span", {
+                children: t("slashI18nStats", {
+                  total: totalCount,
+                  translated: translatedCount,
+                  untranslated: untranslatedCount,
+                }),
+              }),
+              jsxs("div", {
+                style: { display: "flex", alignItems: "center", gap: "6px" },
+                children: [
+                  jsx("button", {
+                    type: "button",
+                    disabled: !writable || isAnyBatchRunning || untranslatedCount === 0,
+                    onClick: () => handleBatchAiAction("translate"),
+                    style: {
+                      height: "28px",
+                      boxSizing: "border-box",
+                      padding: "0 10px",
+                      borderRadius: "6px",
+                      fontSize: "12px",
+                      font: "inherit",
+                      cursor: (untranslatedCount > 0 && !isAnyBatchRunning) ? "pointer" : "default",
+                      color: "#93c5fd",
+                      background: "rgba(37, 99, 235, 0.12)",
+                      border: "1px solid rgba(59, 130, 246, 0.3)",
+                      opacity: (untranslatedCount > 0 && !isAnyBatchRunning) ? 1 : 0.5,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: "5px",
+                      whiteSpace: "nowrap",
+                    },
+                    children: jsxs("span", {
+                      style: { display: "inline-flex", alignItems: "center", gap: "5px" },
+                      children: [
+                        jsx(IconSparkles, { size: 12 }),
+                        batchTranslating
+                          ? t("slashI18nBatchAiLoading", { n: untranslatedCount })
+                          : t("slashI18nBatchAi"),
+                      ],
+                    }),
+                  }),
+                  jsx("button", {
+                    type: "button",
+                    disabled: !writable || isAnyBatchRunning || optimizeCandidates.length === 0,
+                    onClick: () => handleBatchAiAction("optimize"),
+                    title: "将长文案或未翻译项通过 AI 归纳精简为适合斜杠下拉菜单的短描述 (12-28字)",
+                    style: {
+                      height: "28px",
+                      boxSizing: "border-box",
+                      padding: "0 10px",
+                      borderRadius: "6px",
+                      fontSize: "12px",
+                      font: "inherit",
+                      cursor: (optimizeCandidates.length > 0 && !isAnyBatchRunning) ? "pointer" : "default",
+                      color: "#c084fc",
+                      background: "rgba(168, 85, 247, 0.12)",
+                      border: "1px solid rgba(192, 132, 252, 0.3)",
+                      opacity: (optimizeCandidates.length > 0 && !isAnyBatchRunning) ? 1 : 0.5,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: "5px",
+                      whiteSpace: "nowrap",
+                    },
+                    children: jsxs("span", {
+                      style: { display: "inline-flex", alignItems: "center", gap: "5px" },
+                      children: [
+                        jsx(IconCompress, { size: 12 }),
+                        batchOptimizing
+                          ? t("slashI18nBatchAiOptimizeLoading", { n: optimizeCandidates.length })
+                          : t("slashI18nBatchAiOptimize"),
+                      ],
+                    }),
+                  }),
+                ],
+              }),
+            ],
+          }),
+          jsx("div", {
+            style: {
+              display: "flex",
+              flexDirection: "column",
+              gap: "8px",
+              maxHeight: "360px",
+              overflowY: "auto",
+              paddingRight: "4px",
+            },
+            children: filteredItems.length === 0
+              ? jsx("div", {
+                  style: {
+                    padding: "32px 16px",
+                    textAlign: "center",
+                    color: "var(--dsw-alias-label-tertiary, #9ca3af)",
+                    fontSize: "13px",
+                  },
+                  children: t("slashI18nEmptyFilter"),
+                })
+              : filteredItems.map((item, idx) => {
+                  const desc = item.description;
+                  const currentVal = drafts[desc] !== undefined ? drafts[desc] : (SLASH_ZH[desc] || "");
+                  const isTranslating = translatingKeys.has(desc);
+                  const isOptimizing = optimizingKeys.has(desc);
+                  const isBusy = isTranslating || isOptimizing || isAnyBatchRunning;
+                  const isCustom = Object.prototype.hasOwnProperty.call(customSlashZh, desc);
+                  const isBuiltin = Object.prototype.hasOwnProperty.call(SLASH_ZH, desc);
+                  const isTypeCommand = item.type === "command" || item.type === "hint";
+                  const isLong = (desc || "").length > 60;
+
+                  return jsxs("div", {
+                    key: item.name + "_" + idx,
+                    style: {
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "6px",
+                      padding: "10px 12px",
+                      borderRadius: "8px",
+                      background: "var(--dsw-alias-bg-layer-1, #141414)",
+                      border: "1px solid var(--dsw-alias-border-l2, #2a2a2a)",
+                    },
+                    children: [
+                      jsxs("div", {
+                        style: { display: "flex", alignItems: "center", gap: "8px" },
+                        children: [
+                          jsx("span", {
+                            style: {
+                              fontSize: "10.5px",
+                              fontWeight: 600,
+                              padding: "1px 5px",
+                              borderRadius: "4px",
+                              background: isTypeCommand ? "rgba(37, 99, 235, 0.18)" : "rgba(168, 85, 247, 0.18)",
+                              color: isTypeCommand ? "#93c5fd" : "#d8b4fe",
+                              border: isTypeCommand ? "1px solid rgba(96, 165, 250, 0.3)" : "1px solid rgba(192, 132, 252, 0.3)",
+                            },
+                            children: isTypeCommand ? (item.type === "hint" ? "提示" : "命令") : "技能",
+                          }),
+                          jsx("span", {
+                            style: {
+                              fontSize: "12.5px",
+                              fontWeight: 600,
+                              fontFamily: "monospace",
+                              color: "var(--dsw-alias-label-primary, #f3f4f6)",
+                            },
+                            children: item.name,
+                          }),
+                          isLong ? jsx("span", {
+                            style: {
+                              fontSize: "10px",
+                              padding: "1px 4px",
+                              borderRadius: "4px",
+                              background: "rgba(245, 158, 11, 0.15)",
+                              color: "#fbbf24",
+                              border: "1px solid rgba(251, 191, 36, 0.3)",
+                            },
+                            children: t("slashI18nTagLong"),
+                          }) : null,
+                          jsx("span", {
+                            style: {
+                              marginLeft: "auto",
+                              fontSize: "10.5px",
+                              padding: "1px 5px",
+                              borderRadius: "4px",
+                              background: isCustom ? "rgba(34, 197, 94, 0.15)" : (isBuiltin ? "rgba(156, 163, 175, 0.12)" : "rgba(239, 68, 68, 0.15)"),
+                              color: isCustom ? "#4ade80" : (isBuiltin ? "#9ca3af" : "#f87171"),
+                              border: isCustom ? "1px solid rgba(74, 222, 128, 0.25)" : (isBuiltin ? "1px solid rgba(156, 163, 175, 0.25)" : "1px solid rgba(248, 113, 113, 0.25)"),
+                            },
+                            children: isCustom ? t("slashI18nTagCustom") : (isBuiltin ? t("slashI18nTagBuiltin") : t("slashI18nFilterUntranslated")),
+                          }),
+                        ],
+                      }),
+                      jsx("div", {
+                        style: {
+                          fontSize: "11.5px",
+                          lineHeight: 1.4,
+                          color: "var(--dsw-alias-label-tertiary, #9ca3af)",
+                          background: "rgba(0, 0, 0, 0.2)",
+                          padding: "4px 8px",
+                          borderRadius: "5px",
+                          wordBreak: "break-word",
+                        },
+                        children: desc,
+                      }),
+                      jsxs("div", {
+                        style: { display: "flex", alignItems: "center", gap: "6px" },
+                        children: [
+                          jsx("input", {
+                            type: "text",
+                            value: currentVal,
+                            disabled: !writable || saving || isBusy,
+                            placeholder: t("slashI18nPlaceholderTranslation"),
+                            onChange: (e) => {
+                              const v = e.target.value;
+                              setDrafts((prev) => ({ ...prev, [desc]: v }));
+                              setIsDirty(true);
+                            },
+                            style: {
+                              flex: 1,
+                              height: "32px",
+                              boxSizing: "border-box",
+                              padding: "0 10px",
+                              fontSize: "12.5px",
+                              borderRadius: "6px",
+                              background: "var(--dsw-alias-bg-layer-2, #1e1e1e)",
+                              border: "1px solid var(--dsw-alias-border-l2, #333)",
+                              color: "var(--dsw-alias-label-primary, #f3f4f6)",
+                            },
+                          }),
+                          jsx("button", {
+                            type: "button",
+                            disabled: !writable || saving || isBusy,
+                            onClick: () => handleSingleAiAction(item, "translate"),
+                            title: t("slashI18nAiButton"),
+                            style: {
+                              height: "32px",
+                              boxSizing: "border-box",
+                              padding: "0 10px",
+                              borderRadius: "6px",
+                              fontSize: "12px",
+                              font: "inherit",
+                              cursor: "pointer",
+                              color: "#93c5fd",
+                              background: "rgba(37, 99, 235, 0.12)",
+                              border: "1px solid rgba(59, 130, 246, 0.3)",
+                              opacity: isTranslating ? 0.5 : 1,
+                              whiteSpace: "nowrap",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              gap: "5px",
+                            },
+                            children: jsxs("span", {
+                              style: { display: "inline-flex", alignItems: "center", gap: "5px" },
+                              children: [
+                                jsx(IconSparkles, { size: 12 }),
+                                isTranslating ? "…" : t("slashI18nAiButton"),
+                              ],
+                            }),
+                          }),
+                          isLong ? jsx("button", {
+                            type: "button",
+                            disabled: !writable || saving || isBusy,
+                            onClick: () => handleSingleAiAction(item, "optimize"),
+                            title: "通过 AI 提炼核心功能，精简归纳为短句",
+                            style: {
+                              height: "32px",
+                              boxSizing: "border-box",
+                              padding: "0 10px",
+                              borderRadius: "6px",
+                              fontSize: "12px",
+                              font: "inherit",
+                              cursor: "pointer",
+                              color: "#c084fc",
+                              background: "rgba(168, 85, 247, 0.12)",
+                              border: "1px solid rgba(192, 132, 252, 0.3)",
+                              opacity: isOptimizing ? 0.5 : 1,
+                              whiteSpace: "nowrap",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              gap: "5px",
+                            },
+                            children: jsxs("span", {
+                              style: { display: "inline-flex", alignItems: "center", gap: "5px" },
+                              children: [
+                                jsx(IconCompress, { size: 12 }),
+                                isOptimizing ? "…" : t("slashI18nAiOptimize"),
+                              ],
+                            }),
+                          }) : null,
+                          jsx("button", {
+                            type: "button",
+                            disabled: !writable || saving || isBusy,
+                            onClick: () => handleResetItem(item),
+                            title: t("slashI18nResetButton"),
+                            style: {
+                              height: "32px",
+                              width: "32px",
+                              minWidth: "32px",
+                              boxSizing: "border-box",
+                              padding: 0,
+                              borderRadius: "6px",
+                              fontSize: "12px",
+                              font: "inherit",
+                              cursor: "pointer",
+                              color: "var(--dsw-alias-label-tertiary, #9ca3af)",
+                              background: "var(--dsw-alias-bg-layer-2, #1e1e1e)",
+                              border: "1px solid var(--dsw-alias-border-l2, #333)",
+                              whiteSpace: "nowrap",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                            },
+                            children: jsx(IconReset, { size: 14 }),
+                          }),
+                        ],
+                      }),
+                    ],
+                  });
+                }),
+          }),
+          jsxs("div", {
+            style: {
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              paddingTop: "14px",
+              marginTop: "6px",
+              borderTop: "1px solid var(--dsw-alias-border-l2, #333)",
+              flexWrap: "wrap",
+              gap: "10px",
+            },
+            children: [
+              jsxs("div", {
+                style: { display: "flex", alignItems: "center", gap: "8px", minHeight: "24px" },
+                children: [
+                  savedTick ? jsxs("span", {
+                    style: {
+                      fontSize: "12.5px",
+                      color: "#4ade80",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "5px",
+                      background: "rgba(34, 197, 94, 0.12)",
+                      padding: "3px 8px",
+                      borderRadius: "6px",
+                      border: "1px solid rgba(74, 222, 128, 0.25)",
+                    },
+                    children: [
+                      jsx(IconCheck, { size: 13 }),
+                      t("slashI18nSavedNotice"),
+                    ],
+                  }) : null,
+                  error !== null ? jsx("span", {
+                    style: {
+                      fontSize: "12px",
+                      color: "var(--dsw-alias-state-error-primary, #ef4444)",
+                      background: "rgba(239, 68, 68, 0.1)",
+                      padding: "3px 8px",
+                      borderRadius: "6px",
+                    },
+                    children: `${t("saveError")}: ${error}`,
+                  }) : null,
+                  !savedTick && error === null && isDirty ? jsx("span", {
+                    style: {
+                      fontSize: "12px",
+                      color: "#fbbf24",
+                      background: "rgba(245, 158, 11, 0.12)",
+                      padding: "3px 8px",
+                      borderRadius: "6px",
+                      border: "1px solid rgba(251, 191, 36, 0.25)",
+                    },
+                    children: "有未保存的修改",
+                  }) : null,
+                ],
+              }),
+              jsxs("div", {
+                style: { display: "flex", alignItems: "center", gap: "8px", marginLeft: "auto" },
+                children: [
+                  jsx("button", {
+                    type: "button",
+                    disabled: !writable || !isDirty || saving,
+                    onClick: handleSave,
+                    style: {
+                      height: "34px",
+                      boxSizing: "border-box",
+                      padding: "0 18px",
+                      borderRadius: "8px",
+                      fontSize: "13px",
+                      fontWeight: 500,
+                      font: "inherit",
+                      cursor: (writable && isDirty && !saving) ? "pointer" : "default",
+                      color: "var(--dsw-alias-label-primary-inverted, #fff)",
+                      background: "var(--dsw-alias-brand-primary, #2563eb)",
+                      border: "1px solid transparent",
+                      opacity: writable && isDirty && !saving ? 1 : 0.5,
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: "6px",
+                      whiteSpace: "nowrap",
+                    },
+                    children: [
+                      saving ? "…" : (savedTick ? jsx(IconCheck, { size: 13 }) : null),
+                      t("slashI18nSave"),
+                    ],
+                  }),
+                  props.onClose ? jsx("button", {
+                    type: "button",
+                    onClick: props.onClose,
+                    style: {
+                      height: "34px",
+                      boxSizing: "border-box",
+                      padding: "0 18px",
+                      borderRadius: "8px",
+                      fontSize: "13px",
+                      fontWeight: 500,
+                      font: "inherit",
+                      cursor: "pointer",
+                      color: "var(--dsw-alias-label-primary, #f3f4f6)",
+                      background: "var(--dsw-alias-bg-layer-2, #1e1e1e)",
+                      border: "1px solid var(--dsw-alias-border-l2, #333)",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      whiteSpace: "nowrap",
+                    },
+                    children: t("done"),
+                  }) : null,
+                ],
+              }),
+            ],
+          }),
         ],
       });
     }
@@ -2732,6 +3781,7 @@ window.__ModuleLoader__.load({
         switchRow(opt),
         ...(opt.key === "workspacelessChat" ? [chatPathGroup] : []),
         ...(opt.key === "modelCapability" ? [modelsGroup] : []),
+        ...(opt.key === "slashI18n" ? [jsx(SlashI18nManager, { t, writable, onClose: () => setModalOpt(null) })] : []),
         ...(error !== null ? [jsx("div", {
           style: {
             padding: "0 16px 12px",
@@ -2962,8 +4012,8 @@ window.__ModuleLoader__.load({
             title: t(activeOpt.titleKey),
             description: t(activeOpt.descKey),
             closeLabel: t("close"),
-            className: "tk-modal width",
-            footer: jsx("button", {
+            className: activeOpt.key === "slashI18n" ? "tk-modal width tk-modal-slash-i18n" : "tk-modal width",
+            footer: activeOpt.key === "slashI18n" ? undefined : jsx("button", {
               type: "button",
               onClick: () => { setModalOpt(null); },
               style: {
@@ -3001,6 +4051,10 @@ window.__ModuleLoader__.load({
         .tk-modal.width {
           width: min(560px, calc(100vw - 32px)) !important;
           overflow: visible !important;
+        }
+        .tk-modal-slash-i18n {
+          width: min(840px, calc(100vw - 32px)) !important;
+          max-width: 840px !important;
         }
         /* Change report: the markdown code-block container recipe —
            markdown-code-block background, 12px radius, banner row on the
@@ -3277,14 +4331,14 @@ window.__ModuleLoader__.load({
       // Optimization wiring: the runtime faces arrive as services, so the
       // callback pattern waits for both instead of hard-failing the plugin.
       let sessionsService = undefined;
-      ctx.inject(["workspaces", "sessions"], (services) => {
-        sessionsService = services.sessions;
+      ctx.inject(["workspaces", "sessions", "uiWorkspace"], (services) => {
+        sessionsService = services?.sessions ?? services?.get?.("sessions");
         ctx.effect(
-          () => installWorkspacelessChat(services, scope),
+          () => installWorkspacelessChat(services, scope, ctx),
           "toolkit: workspaceless chat",
         );
         ctx.effect(
-          () => installActivityView(services, scope),
+          () => installActivityView(services, scope, ctx),
           "toolkit: activity view",
         );
       });
@@ -3365,6 +4419,7 @@ window.__ModuleLoader__.load({
         const registration = safeSlotRegister(ctx,
           {
             name: "conversation.chat.turnTail",
+            id: "dsh-plugin-toolkit",
             priority: REPORT_TAIL_PRIORITY,
             select: selectTurnChanges,
             locale: NS,
