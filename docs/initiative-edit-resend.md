@@ -114,6 +114,7 @@ compaction 的"旧内容留在上面"语义不受影响（其标记不带 origin
 | M6 | 单测（7 例）+ 重建 bundle + 重启 + 线上 e2e | scripts | ✅ |
 | M7 | 规范整改（去掉 ui-chat 深度 import，气泡自渲染） | `client.js`、`package.json` | ✅ |
 | M8 | 升级丢失恢复 + 补丁持久化（`host/session-rewrite.patch`、`scripts/apply-host-patch.mjs`、`scripts/e2e-verify-rewrite.mjs`） | 本仓库 + dsh checkout | ✅ |
+| M9 | 投影改写一致性：`turnOutline`/`titleInput` 识别 `origin:'edit'` 的 replace、fallback 标题重算、provider 输入过滤 | `session-turn-outline`、`session-title`（补丁扩到 20 文件） | ✅ |
 
 ## 6. 风险与缓释
 
@@ -182,3 +183,41 @@ compaction 的"旧内容留在上面"语义不受影响（其标记不带 origin
   改写后可能仍显示旧文案（改写只替换对话消息，不重算标题）。首版 e2e 把整页文本
   当作转录断言，于是把标题残留误判为「旧消息没被擦除」（2026-09-17 15:53 的那次失败即此），
   现已把断言限定在转录区域（排除标题 chrome），连续两次 PASS。
+  M9 之后：**fallback 标题**会在其输入被遮蔽时重算，**provider/用户标题**仍按语义保留
+  （provider 输入已过滤掉被遮蔽消息，下一次 all-prompts 重算不会再看到它们）。
+
+## 8. 投影残留与修复（D2，2026-09-17）
+
+**症状**：转录已原地改写（e2e PASS），但 `E2E-D2` 探针显示被擦除的原话仍留在派生状态里：
+`~/.dsh/storages/session_projcache/sessions/<id>.json` 的 `turnOutline.turns[0].prompt` 与
+`titleInput.first.text` 都还是 `… 第一条`，且两个投影都已追平到最新 seq（不是没处理，
+是处理了也不回收）。用户可见后果：回合导航轨的 outline 回落预览（`ui-chat/turn-rail-items.ts`
+"loaded window first, outline fallback"）会重新展示被擦除的回合，标题输入也仍以被擦除的消息打底。
+
+**根因**：host 投影是 append-only fold，不识别 surface `replace`。改写事件
+（`source.origin === 'edit'`）到达时 `session-turn-outline` 与 `session-title` 的 `titleInput`
+照常累积。也就是说「擦除」有三条独立派生路径，只有两条实现了：客户端转录
+（`ui-conversation` 的 `rewriteFiltered`）与模型 surface（agent loop 的 replace），投影这条漏了。
+
+**修复**（判别式：`user/message` 且 `source.origin === 'edit'` 且带 replace；
+compaction 的同款 replace 不带 `origin`，必须保持原样——它的内容留在转录里）：
+
+- `session-turn-outline`：fold 状态新增与 `turns` 对齐的 `promptSeqs`（host-only，不上 wire，
+  `stateVersion` 2→3）。改写按 `[startSeq, endSeq]` 丢弃 **promptSeq 落在区间内**的条目：
+  按「条目自己的开场 prompt」而不是 `turn/start` seq 判定，因此改写同回合的后一条 steer 时，
+  该回合的开场 prompt 与条目都保留。
+- `session-title`：`titleInput`（`stateVersion` 3→4）在遮蔽包含 `first` 时把 first 重置为改写消息
+  （此后没有更早的幸存者，count 归 1）；`collectSessionTitleMessages` 扫描原始日志时先弹出
+  被遮蔽的消息，provider 输入不会带回被擦除的内容；服务在「站着的 fallback 标题来源被遮蔽」
+  时重算一次 fallback（provider/user 标题保留，理由见上）。
+- 回归用例：`session-turn-outline/tests/projection.spec.ts`（+3：改写丢弃、改写 steer 保留、
+  非改写 replace 保留）、`session-title/tests/projection.spec.ts`（+2）、
+  `session-title/tests/provider.spec.ts`（+2：provider 输入过滤、fallback 重算）。
+- 顺带修掉补丁内 `session-rewrite.host.spec.ts` 的图片块类型笔误
+  （`{type:'image', attachment}` → `{type:'image', mediaType, data}`）；该文件此前的类型错误
+  被增量 `tsc -b` 缓存掩盖，改到 session 包后重新全量检查才暴露。
+
+**验收**：补丁扩到 20 个文件（新增 `session-title`/`session-turn-outline` 的 6 个文件），
+`git apply --check -R` 与工作区完全一致；重建 lib + 重启后跑
+`scripts/e2e-verify-rewrite.mjs`，并追加投影残留检查（扫 projcache 中含 `E2E-RW-` 的会话，
+断言不再出现「第一条」），结果写在 `/tmp/rewrite-verify-runner.log`。

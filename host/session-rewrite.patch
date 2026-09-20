@@ -279,7 +279,7 @@ index 49c939d3f0..779fe95334 100644
  
 diff --git a/packages/api/session-controller/tests/session-rewrite.host.spec.ts b/packages/api/session-controller/tests/session-rewrite.host.spec.ts
 new file mode 100644
-index 0000000000..90f2687edd
+index 0000000000..01164e790a
 --- /dev/null
 +++ b/packages/api/session-controller/tests/session-rewrite.host.spec.ts
 @@ -0,0 +1,169 @@
@@ -424,7 +424,7 @@ index 0000000000..90f2687edd
 +    const response = await remote(ctx).rewrite({
 +      sessionId: session.id,
 +      messageSeq: lastHumanSeq(session),
-+      content: [{ type: 'image', attachment: 'a' as never }],
++      content: [{ type: 'image', mediaType: 'image/png', data: 'YQ==' }],
 +    })
 +
 +    expect(response.ok).toBe(false)
@@ -823,6 +823,642 @@ index 05af6bae3e..63a65d792f 100644
    plugin: { kind: 'plugin'; plugin: string } & ContextFormed
    model: ModelMessageSource
    tool: ToolMessageSource
+diff --git a/packages/session/session-title/src/index.ts b/packages/session/session-title/src/index.ts
+index 8d9a550a51..f097bb0843 100644
+--- a/packages/session/session-title/src/index.ts
++++ b/packages/session/session-title/src/index.ts
+@@ -138,6 +138,22 @@ function sessionTitleUserMessageOf(event: SessionEvent): SessionTitleUserMessage
+   if (normalizeSessionTitle(text, Number.MAX_SAFE_INTEGER).length === 0) return undefined
+   return { seq: event.seq, text }
+ }
++
++/**
++ * The shadowed range of an in-place edit rewrite, or `undefined` for any other
++ * event. The loop journals a rewrite as a `user/message` whose source carries
++ * `origin: 'edit'` and whose surface op replaces the edited message; compaction
++ * checkpoints use the same surface op without that origin.
++ */
++function editRewriteRange(
++  event: SessionEvent,
++): { readonly startSeq: SessionSeq; readonly endSeq: SessionSeq } | undefined {
++  if (event.type !== 'user/message') return undefined
++  const source = event.data.source
++  if (source.kind !== 'user' || source.origin !== 'edit') return undefined
++  if (event.surfaceOp === 'append') return undefined
++  return event.surfaceOp
++}
+ /** Defensive copy of a logged title source (the snapshot must not alias log-owned objects). */
+ function copySessionTitleSource(source: SessionTitleSource): SessionTitleSource {
+   switch (source.kind) {
+@@ -237,9 +253,11 @@ const titleInputStateSchema: ZodType<TitleInputState> = zod.object({
+ 
+ /**
+  * Collect eligible human text messages from a session log, in seq order.
+- * The full eligible prefix is only materialized for one provider generation,
+- * so it is scanned from the log at execution time rather than retained by
+- * the O(1) `titleInput` projection.
++ * An in-place edit rewrite shadows the tail it replaced, so those messages are
++ * popped before the rewrite message itself is collected: a title is never
++ * derived from history the edit erased. The full eligible prefix is only
++ * materialized for one provider generation, so it is scanned from the log at
++ * execution time rather than retained by the O(1) `titleInput` projection.
+  * @param events - the session event log.
+  * @param throughSeq - optional inclusive upper seq bound.
+  * @returns eligible messages with exact source seqs.
+@@ -251,6 +269,10 @@ function collectSessionTitleMessages(
+   const messages: SessionTitleUserMessage[] = []
+   for (const event of events) {
+     if (throughSeq !== undefined && event.seq > throughSeq) break
++    const range = editRewriteRange(event)
++    if (range !== undefined) {
++      while (messages.length > 0 && (messages.at(-1)?.seq ?? -1) >= range.startSeq) messages.pop()
++    }
+     const message = sessionTitleUserMessageOf(event)
+     if (message !== undefined) messages.push(message)
+   }
+@@ -339,14 +361,28 @@ export class SessionTitleService extends Service {
+ 
+     ctx.sessionProjections.register<'titleInput', TitleInputState>({
+       key: 'titleInput',
+-      stateVersion: 3,
++      stateVersion: 4,
+       stateSchema: titleInputStateSchema,
+       init: () => EMPTY_TITLE_INPUT,
+       apply: (state, event) => {
+         const message = sessionTitleUserMessageOf(event)
++        const range = editRewriteRange(event)
++        if (range !== undefined
++          && message !== undefined
++          && state.first !== null
++          && state.first.seq >= range.startSeq
++          && state.first.seq <= range.endSeq) {
++          // The edit shadowed the earliest eligible message: the rewrite is the
++          // new first input and, because everything after the target was
++          // shadowed with it, now the only surviving one.
++          return { first: message, count: 1, lastSeq: message.seq }
++        }
+         if (message === undefined) return state
+         return {
+           first: state.first ?? message,
++          // An edit that leaves an earlier message standing keeps the running
++          // count: it only ever gates first-prompt scheduling, and overcounting
++          // after an edit can only suppress an automatic retitle.
+           count: state.count + 1,
+           lastSeq: message.seq,
+         }
+@@ -501,6 +537,7 @@ export class SessionTitleService extends Service {
+     if (event.data.source.kind !== 'user' || sessionTitleUserMessageOf(event) === undefined) return
+     // A user rename pins the title: no automatic revision may override it.
+     if (this.get(session)?.source.kind === 'user') return
++    const rewritten = editRewriteRange(event)
+     const registration = this.registration
+     if (registration !== undefined && !registration.closing) {
+       const count = this.titleInputOf(session).count
+@@ -515,6 +552,7 @@ export class SessionTitleService extends Service {
+     this.defer(async () => {
+       try {
+         await this.ensureFallback(session)
++        if (rewritten !== undefined) this.refreshShadowedFallback(session, rewritten)
+       } catch (error: unknown) {
+         if (!this.serviceActive()) return
+         this.ctx.logger.warn(`session "${session.id}": fallback title update failed: ${String(error)}`)
+@@ -522,6 +560,33 @@ export class SessionTitleService extends Service {
+     })
+   }
+ 
++  /**
++   * Re-derive a standing fallback title whose only input an in-place edit
++   * shadowed, so the header never keeps showing erased text. A provider or
++   * user title is left standing (it summarizes the session rather than quoting
++   * the erased message), and a re-derivation that lands on the same text
++   * appends nothing.
++   * @param session - session whose title was derived from shadowed input.
++   * @param range - the rewrite's shadowed seq range.
++   */
++  private refreshShadowedFallback(
++    session: Session,
++    range: { readonly startSeq: SessionSeq; readonly endSeq: SessionSeq },
++  ): void {
++    const current = this.get(session)
++    if (current === undefined || current.source.kind !== 'fallback') return
++    if (!current.messageSeqs.some(seq => seq >= range.startSeq && seq <= range.endSeq)) return
++    const first = this.titleInputOf(session).first
++    if (first === null) return
++    const title = fallbackSessionTitle(first.text, this.config.fallbackMaxWords, this.config.fallbackMaxBytes)
++    if (title.length === 0 || title === current.title) return
++    session.append('session/title', {
++      title,
++      messageSeqs: [first.seq],
++      source: { kind: 'fallback' },
++    })
++  }
++
+   /** Start pending automatic work only after its exact main-request route is logged. */
+   private onRequestHeader(session: Session, event: Extract<SessionEvent, { type: 'request/header' }>): void {
+     if (!this.serviceActive()) return
+diff --git a/packages/session/session-title/tests/projection.spec.ts b/packages/session/session-title/tests/projection.spec.ts
+index df2b5f1f91..aee77f16d7 100644
+--- a/packages/session/session-title/tests/projection.spec.ts
++++ b/packages/session/session-title/tests/projection.spec.ts
+@@ -97,6 +97,59 @@ describe('title projection unit', () => {
+     expect(ctx.sessionProjections.checkpoint(session).titleInput).toBeDefined()
+   })
+ 
++  it('rebases the first title input on an in-place edit that shadowed it', async () => {
++    const { ctx, session } = await harness(true)
++    session.append('turn/start', { turn: 1 })
++    const erased = session.append('user/message', createUserMessage({
++      content: [{ type: 'text', text: 'the erased input' }],
++      source: { kind: 'user' },
++    }), { surfaceOp: 'append' }).seq
++    session.append('turn/start', { turn: 2 })
++    const nodes = session.surface.nodes
++    const shadowed = nodes.slice(nodes.indexOf(erased))
++    const rewritten = session.append('user/message', createUserMessage({
++      content: [{ type: 'text', text: 'the edited input' }],
++      source: { kind: 'user', origin: 'edit', rewriteSeq: erased },
++    }), {
++      surfaceOp: { op: 'replace', startSeq: erased, endSeq: shadowed[shadowed.length - 1]! },
++      sourceEventSeqs: shadowed,
++    }).seq
++
++    expect(ctx.sessionProjections.stateOf(session, 'titleInput')).toMatchObject({
++      first: { seq: rewritten, text: 'the edited input' },
++      count: 1,
++      lastSeq: rewritten,
++    })
++  })
++
++  it('keeps the standing first input when the edit shadowed only a later message', async () => {
++    const { ctx, session } = await harness(true)
++    session.append('turn/start', { turn: 1 })
++    const first = session.append('user/message', createUserMessage({
++      content: [{ type: 'text', text: 'the surviving first input' }],
++      source: { kind: 'user' },
++    }), { surfaceOp: 'append' }).seq
++    const second = session.append('user/message', createUserMessage({
++      content: [{ type: 'text', text: 'the later input' }],
++      source: { kind: 'user' },
++    }), { surfaceOp: 'append' }).seq
++    session.append('turn/start', { turn: 2 })
++    const nodes = session.surface.nodes
++    const shadowed = nodes.slice(nodes.indexOf(second))
++    const rewritten = session.append('user/message', createUserMessage({
++      content: [{ type: 'text', text: 'the edited later input' }],
++      source: { kind: 'user', origin: 'edit', rewriteSeq: second },
++    }), {
++      surfaceOp: { op: 'replace', startSeq: second, endSeq: shadowed[shadowed.length - 1]! },
++      sourceEventSeqs: shadowed,
++    }).seq
++
++    expect(ctx.sessionProjections.stateOf(session, 'titleInput')).toMatchObject({
++      first: { seq: first, text: 'the surviving first input' },
++      lastSeq: rewritten,
++    })
++  })
++
+   it('rejects a version-matching checkpoint with inconsistent title input counters', async () => {
+     const { ctx, session } = await harness(true)
+     const checkpoint = ctx.sessionProjections.checkpoint(session)
+diff --git a/packages/session/session-title/tests/provider.spec.ts b/packages/session/session-title/tests/provider.spec.ts
+index d9632ea3b6..a485f84e9e 100644
+--- a/packages/session/session-title/tests/provider.spec.ts
++++ b/packages/session/session-title/tests/provider.spec.ts
+@@ -50,6 +50,26 @@ function appendRoute(session: ReturnType<Context['sessions']['create']>, reason:
+   })
+ }
+ 
++/**
++ * Journal an in-place edit rewrite the way the agent loop does: the new message
++ * claims `target` and surface-replaces it plus every surface node after it.
++ */
++function appendRewrite(
++  session: ReturnType<Context['sessions']['create']>,
++  text: string,
++  target: SessionSeq,
++): SessionSeq {
++  const nodes = session.surface.nodes
++  const shadowed = nodes.slice(nodes.indexOf(target))
++  return session.append('user/message', createUserMessage({
++    content: [{ type: 'text', text }],
++    source: { kind: 'user', origin: 'edit', rewriteSeq: target },
++  }), {
++    surfaceOp: { op: 'replace', startSeq: target, endSeq: shadowed[shadowed.length - 1]! },
++    sourceEventSeqs: shadowed,
++  }).seq
++}
++
+ describe('SessionTitleService Provider lifecycle', () => {
+   it('inherits title events across forks, skips first-prompt retitling, and lets all-messages update later', async () => {
+     const ctx = new Context()
+@@ -172,6 +192,62 @@ describe('SessionTitleService Provider lifecycle', () => {
+     expect(requests[1]?.messages.map(message => message.seq)).toEqual([first.seq, second.seq])
+   })
+ 
++  it('never derives a provider title from the messages an edit shadowed', async () => {
++    const ctx = new Context()
++    await ctx.plugin(SessionStore)
++    await ctx.plugin(SessionProjectionRegistry)
++    await ctx.plugin(SessionTitleService, CONFIG)
++    const requests: SessionTitleProviderRequest[] = []
++    ctx.sessionTitle.register({
++      id: SessionTitleProviderId('rewrite-model'),
++      automatic: 'all-prompts',
++      async generate(request) {
++        requests.push(request)
++        return { title: 'Edited title', messageSeqs: request.messages.map(message => message.seq) }
++      },
++    })
++    const session = ctx.sessions.create(SessionId('rewrite-provider'))
++    session.append('turn/start', { turn: 1 })
++    const erased = appendHumanPrompt(session, 'the erased prompt').seq
++    await settle()
++    appendRoute(session)
++    await settle()
++    session.append('turn/start', { turn: 2 })
++    const rewritten = appendRewrite(session, 'the edited prompt', erased)
++    await settle()
++    appendRoute(session, 'change')
++    await settle()
++
++    expect(requests.at(-1)?.messages.map(message => message.text)).toEqual(['the edited prompt'])
++    expect(ctx.sessionTitle.get(session)).toMatchObject({
++      title: 'Edited title',
++      messageSeqs: [rewritten],
++      source: { kind: 'provider', provider: SessionTitleProviderId('rewrite-model') },
++    })
++  })
++
++  it('re-derives a standing fallback title whose only input an edit shadowed', async () => {
++    const ctx = new Context()
++    await ctx.plugin(SessionStore)
++    await ctx.plugin(SessionProjectionRegistry)
++    await ctx.plugin(SessionTitleService, CONFIG)
++    const session = ctx.sessions.create(SessionId('rewrite-fallback'))
++    session.append('turn/start', { turn: 1 })
++    const erased = appendHumanPrompt(session, 'erased prompt').seq
++    await settle()
++    expect(ctx.sessionTitle.get(session)).toMatchObject({ title: 'erased prompt', source: { kind: 'fallback' } })
++
++    session.append('turn/start', { turn: 2 })
++    const rewritten = appendRewrite(session, 'edited words here', erased)
++    await settle()
++
++    expect(ctx.sessionTitle.get(session)).toMatchObject({
++      title: 'edited words here',
++      messageSeqs: [rewritten],
++      source: { kind: 'fallback' },
++    })
++  })
++
+   it('preserves provider input order across bounded title-input chunks', async () => {
+     const ctx = new Context()
+     await ctx.plugin(SessionStore)
+diff --git a/packages/session/session-turn-outline/src/projection.ts b/packages/session/session-turn-outline/src/projection.ts
+index 992273e72a..4a3ce75c42 100644
+--- a/packages/session/session-turn-outline/src/projection.ts
++++ b/packages/session/session-turn-outline/src/projection.ts
+@@ -16,6 +16,15 @@
+  * identity, so the identity-gated change feed pushes at most three times per
+  * turn (boundary, prompt, response).
+  *
++ * The fold is shadow-aware for in-place edit rewrites: a `user/message` the
++ * loop journaled with `source.origin === 'edit'` surface-replaces the edited
++ * message and its consumed tail, so every entry whose OWN opening prompt fell
++ * inside that range is dropped before the rewrite message fills the new turn's
++ * prompt. The log stays append-only — the fold simply refuses to keep serving
++ * turns the transcript erased. Compaction replacements carry no `origin`, and
++ * a rewrite of a later steer leaves its turn's opening prompt (and entry)
++ * standing.
++ *
+  * @module @deepseek-ai/dsh-session-turn-outline/projection
+  */
+ 
+@@ -74,17 +83,69 @@ const turnOutlineEntriesSchema: ZodType<readonly TurnOutlineEntry[]> = z.array(z
+   }
+ })
+ 
++const turnOutlinePromptSeqSchema: ZodType<SessionSeq | null> = z
++  .number()
++  .int()
++  .nonnegative()
++  .max(Number.MAX_SAFE_INTEGER)
++  .transform(SessionSeq)
++  .nullable()
++
+ const turnOutlineStateSchema: ZodType<TurnOutlineState> = z.object({
+   turns: turnOutlineEntriesSchema,
++  promptSeqs: z.array(turnOutlinePromptSeqSchema),
+   draft: z.string().max(RESPONSE_PREVIEW_LIMIT),
+-}).strict()
++}).strict().superRefine((state, context) => {
++  if (state.promptSeqs.length !== state.turns.length) {
++    context.addIssue({ code: 'custom', message: 'turn outline prompt seqs must align with its turns' })
++  }
++})
++
++const EMPTY_OUTLINE: TurnOutlineState = { turns: [], promptSeqs: [], draft: '' }
+ 
+-const EMPTY_OUTLINE: TurnOutlineState = { turns: [], draft: '' }
++/**
++ * The shadowed range of an in-place edit rewrite, or `undefined` for any other
++ * event. The loop journals a rewrite as a `user/message` whose source carries
++ * `origin: 'edit'` and whose surface op replaces the edited message; compaction
++ * checkpoints use the same surface op without that origin and must fold as
++ * before (their content stays in the transcript).
++ */
++function editRewriteRange(
++  event: SessionEvent<'user/message'>,
++): { readonly startSeq: SessionSeq; readonly endSeq: SessionSeq } | undefined {
++  const source = event.data.source
++  if (source.kind !== 'user' || source.origin !== 'edit') return undefined
++  if (event.surfaceOp === 'append') return undefined
++  return event.surfaceOp
++}
++
++/**
++ * Drop every entry whose own opening prompt the rewrite shadowed. Entries the
++ * rewrite did not touch keep their identity, so an outline with nothing
++ * shadowed returns the same state (the drive's `Object.is` gate then stays
++ * quiet). A started turn whose prompt never landed keeps its entry: the
++ * rewrite's own turn opens its boundary before the message is appended.
++ */
++function dropRewrittenTurns(
++  state: TurnOutlineState,
++  range: { readonly startSeq: SessionSeq; readonly endSeq: SessionSeq },
++): TurnOutlineState {
++  if (!state.promptSeqs.some(seq => seq !== null && seq >= range.startSeq && seq <= range.endSeq)) return state
++  const turns: TurnOutlineEntry[] = []
++  const promptSeqs: (SessionSeq | null)[] = []
++  state.turns.forEach((entry, index) => {
++    const promptSeq = state.promptSeqs[index] ?? null
++    if (promptSeq !== null && promptSeq >= range.startSeq && promptSeq <= range.endSeq) return
++    turns.push(entry)
++    promptSeqs.push(promptSeq)
++  })
++  return { turns, promptSeqs, draft: state.draft }
++}
+ 
+ /** The `turnOutline` unit registered on `ctx.sessionProjections` (exported for the unit spec). */
+ export const turnOutlineProjectionDefinition = {
+   key: 'turnOutline',
+-  stateVersion: 2,
++  stateVersion: 3,
+   stateSchema: turnOutlineStateSchema,
+   init: () => EMPTY_OUTLINE,
+   apply: (state, event) => {
+@@ -100,6 +161,7 @@ export const turnOutlineProjectionDefinition = {
+         if (last !== undefined && event.data.turn <= last.turn) return state
+         return {
+           turns: [...state.turns, { turn: event.data.turn, seq: event.seq, prompt: '', response: '' }],
++          promptSeqs: [...state.promptSeqs, null],
+           draft: '',
+         }
+       }
+@@ -108,23 +170,35 @@ export const turnOutlineProjectionDefinition = {
+         // prompt; later human messages in the same turn (steering) keep the
+         // first preview.
+         if (event.data.source.kind !== 'user') return state
+-        const last = state.turns.at(-1)
+-        if (last === undefined || last.prompt !== '') return state
++        const range = editRewriteRange(event)
++        const base = range === undefined ? state : dropRewrittenTurns(state, range)
++        const last = base.turns.at(-1)
++        if (last === undefined || last.prompt !== '') return base
+         const prompt = preview(event.data.content, PROMPT_PREVIEW_LIMIT)
+-        if (prompt === '') return state
+-        return { turns: [...state.turns.slice(0, -1), { ...last, prompt }], draft: state.draft }
++        if (prompt === '') return base
++        return {
++          turns: [...base.turns.slice(0, -1), { ...last, prompt }],
++          promptSeqs: [...base.promptSeqs.slice(0, -1), event.seq],
++          draft: base.draft,
++        }
+       }
+       case 'assistant/message': {
+         // Newest text-bearing message wins; the buffer commits at turn/end.
+         const draft = preview(event.data.message.content, RESPONSE_PREVIEW_LIMIT)
+         if (draft === '' || draft === state.draft) return state
+-        return { turns: state.turns, draft }
++        return { turns: state.turns, promptSeqs: state.promptSeqs, draft }
+       }
+       case 'turn/end': {
+         if (state.draft === '') return state
+         const last = state.turns.at(-1)
+-        if (last === undefined || last.response === state.draft) return { turns: state.turns, draft: '' }
+-        return { turns: [...state.turns.slice(0, -1), { ...last, response: state.draft }], draft: '' }
++        if (last === undefined || last.response === state.draft) {
++          return { turns: state.turns, promptSeqs: state.promptSeqs, draft: '' }
++        }
++        return {
++          turns: [...state.turns.slice(0, -1), { ...last, response: state.draft }],
++          promptSeqs: state.promptSeqs,
++          draft: '',
++        }
+       }
+       default:
+         return state
+diff --git a/packages/session/session-turn-outline/src/types.ts b/packages/session/session-turn-outline/src/types.ts
+index c4ccbcdab3..bccbb0151d 100644
+--- a/packages/session/session-turn-outline/src/types.ts
++++ b/packages/session/session-turn-outline/src/types.ts
+@@ -24,15 +24,25 @@ export interface TurnOutlineEntry {
+ }
+ 
+ /**
+- * Fold state: the served entries plus the open turn's response draft. The
+- * draft buffers the newest text-bearing assistant message until `turn/end`
+- * commits it, and the wire view projects only `turns` — draft-only applies
+- * keep that array's identity, so the change feed stays quiet between turn
+- * boundaries.
++ * Fold state: the served entries, each entry's own prompt-message seq, and the
++ * open turn's response draft. The draft buffers the newest text-bearing
++ * assistant message until `turn/end` commits it, and the wire view projects
++ * only `turns` — draft-only applies keep that array's identity, so the change
++ * feed stays quiet between turn boundaries.
+  */
+ export interface TurnOutlineState {
+   /** Started turns in ascending turn order. */
+   readonly turns: readonly TurnOutlineEntry[]
++  /**
++   * Parallel to `turns`: the seq of the `user/message` that supplied each
++   * entry's prompt preview, or `null` while a started turn still awaits one.
++   * Host-only — never on the wire. An in-place edit rewrite must drop exactly
++   * the entries whose OWN opening prompt the replace shadowed, which the
++   * entry's `turn/start` seq cannot identify (the boundary precedes the
++   * prompt, and rewriting a later steer must leave its turn's opening prompt
++   * standing).
++   */
++  readonly promptSeqs: readonly (SessionSeq | null)[]
+   /** Newest text-bearing assistant preview of the open turn; `''` outside one. */
+   readonly draft: string
+ }
+diff --git a/packages/session/session-turn-outline/tests/projection.spec.ts b/packages/session/session-turn-outline/tests/projection.spec.ts
+index 959e5587b4..2f2542a744 100644
+--- a/packages/session/session-turn-outline/tests/projection.spec.ts
++++ b/packages/session/session-turn-outline/tests/projection.spec.ts
+@@ -35,6 +35,22 @@ function appendPrompt(session: Session, text: string): SessionSeq {
+   }), { surfaceOp: 'append' }).seq
+ }
+ 
++/**
++ * Journal an in-place edit rewrite the way the agent loop does: the new message
++ * claims `target` and surface-replaces it plus every node after it.
++ */
++function appendRewrite(session: Session, text: string, target: SessionSeq): SessionSeq {
++  const nodes = session.surface.nodes
++  const shadowed = nodes.slice(nodes.indexOf(target))
++  return session.append('user/message', createUserMessage({
++    content: [{ type: 'text', text }],
++    source: { kind: 'user', origin: 'edit', rewriteSeq: target },
++  }), {
++    surfaceOp: { op: 'replace', startSeq: target, endSeq: shadowed[shadowed.length - 1]! },
++    sourceEventSeqs: shadowed,
++  }).seq
++}
++
+ /** Append one assembled assistant message with a single text block. */
+ function appendAssistant(session: Session, turn: number, step: number, text: string): void {
+   session.append('assistant/message', {
+@@ -65,7 +81,7 @@ describe('turn outline projection unit', () => {
+     const { ctx, session } = await harness(true)
+     expect(outlineOf(ctx, session)).toEqual([])
+     expect(ctx.sessionProjections.checkpoint(session).turnOutline)
+-      .toEqual({ ver: 2, seq: -1, val: { turns: [], draft: '' } })
++      .toEqual({ ver: 3, seq: -1, val: { turns: [], promptSeqs: [], draft: '' } })
+   })
+ 
+   it('folds each turn with its boundary seq, first prompt, and turn-end response', async () => {
+@@ -143,6 +159,58 @@ describe('turn outline projection unit', () => {
+     ])
+   })
+ 
++  it('drops a rewritten turn and labels the rewrite turn from the edited prompt', async () => {
++    const { ctx, session } = await harness(true)
++    const firstBoundary = session.append('turn/start', { turn: 1 }).seq
++    const prompt = appendPrompt(session, 'the prompt that will be edited')
++    appendAssistant(session, 1, 1, 'the answer that will be withdrawn')
++    endTurn(session, 1)
++    const rewriteBoundary = session.append('turn/start', { turn: 2 }).seq
++    appendRewrite(session, 'the edited prompt', prompt)
++    expect(outlineOf(ctx, session)).toEqual([
++      { turn: 2, seq: rewriteBoundary, prompt: 'the edited prompt', response: '' },
++    ])
++    // The dropped turn is gone from the served outline, not merely shadowed in
++    // the model surface: the rail's outline fallback must never resurface it.
++    expect(outlineOf(ctx, session).some(entry => entry.seq === firstBoundary)).toBe(false)
++  })
++
++  it('keeps a turn whose opening prompt survives a rewritten steer', async () => {
++    const { ctx, session } = await harness(true)
++    const firstBoundary = session.append('turn/start', { turn: 1 }).seq
++    appendPrompt(session, 'opening prompt')
++    const steer = appendPrompt(session, 'the steer that will be edited')
++    appendAssistant(session, 1, 1, 'answer to the steer')
++    endTurn(session, 1)
++    const rewriteBoundary = session.append('turn/start', { turn: 2 }).seq
++    appendRewrite(session, 'the edited steer', steer)
++    expect(outlineOf(ctx, session)).toEqual([
++      { turn: 1, seq: firstBoundary, prompt: 'opening prompt', response: 'answer to the steer' },
++      { turn: 2, seq: rewriteBoundary, prompt: 'the edited steer', response: '' },
++    ])
++  })
++
++  it('keeps every turn across a replacement that is not an edit rewrite', async () => {
++    const { ctx, session } = await harness(true)
++    const boundary = session.append('turn/start', { turn: 1 }).seq
++    appendPrompt(session, 'a prompt a compaction checkpoint may shadow')
++    appendAssistant(session, 1, 1, 'the answer')
++    endTurn(session, 1)
++    // A compaction checkpoint replaces the same way but carries no `origin`:
++    // its content stays in the transcript, so its turn must stay in the outline.
++    const nodes = session.surface.nodes
++    session.append('user/message', createUserMessage({
++      content: [{ type: 'text', text: 'summary checkpoint' }],
++      source: { kind: 'user' },
++    }), {
++      surfaceOp: { op: 'replace', startSeq: nodes[0]!, endSeq: nodes[nodes.length - 1]! },
++      sourceEventSeqs: [...nodes],
++    })
++    expect(outlineOf(ctx, session)).toEqual([
++      { turn: 1, seq: boundary, prompt: 'a prompt a compaction checkpoint may shadow', response: 'the answer' },
++    ])
++  })
++
+   it('pushes at most three times per turn: boundary, prompt, and settled response', async () => {
+     const { ctx, session } = await harness(true)
+     const changes: { seq: SessionSeq; last: TurnOutlineEntry | undefined }[] = []
+@@ -179,7 +247,11 @@ describe('turn outline projection unit', () => {
+       time: 0,
+       data: { message: { content: blocks } },
+     }) as unknown as SessionEvent
+-    const base: TurnOutlineState = { turns: [{ turn: 1, seq: SessionSeq(0), prompt: 'p', response: '' }], draft: '' }
++    const base: TurnOutlineState = {
++      turns: [{ turn: 1, seq: SessionSeq(0), prompt: 'p', response: '' }],
++      promptSeqs: [SessionSeq(1)],
++      draft: '',
++    }
+     // Non-text blocks are skipped; whitespace-heavy short blocks cross the raw
+     // reading bound early, so the collapsed (short) draft still marks the
+     // unread remainder with an ellipsis.
+@@ -198,16 +270,24 @@ describe('turn outline projection unit', () => {
+       time: 0,
+       data: { turn: 1, reason: { kind: 'completed' } },
+     } as unknown as SessionEvent
+-    expect(def.apply({ turns: [], draft: 'orphan' }, end)).toEqual({ turns: [], draft: '' })
++    expect(def.apply({ turns: [], promptSeqs: [], draft: 'orphan' }, end)).toEqual({ turns: [], promptSeqs: [], draft: '' })
+     // …and a re-settled identical response keeps the entries' identity.
+-    const settled: TurnOutlineState = { turns: [{ turn: 1, seq: SessionSeq(0), prompt: 'p', response: 'done' }], draft: 'done' }
++    const settled: TurnOutlineState = {
++      turns: [{ turn: 1, seq: SessionSeq(0), prompt: 'p', response: 'done' }],
++      promptSeqs: [SessionSeq(1)],
++      draft: 'done',
++    }
+     const recommitted = def.apply(settled, end)
+     expect(recommitted.turns).toBe(settled.turns)
+     expect(recommitted.draft).toBe('')
+   })
+ 
+   it('skips a boundary that does not advance the turn number (fabricated envelope)', () => {
+-    const state: TurnOutlineState = { turns: [{ turn: 2, seq: SessionSeq(5), prompt: 'kept', response: '' }], draft: '' }
++    const state: TurnOutlineState = {
++      turns: [{ turn: 2, seq: SessionSeq(5), prompt: 'kept', response: '' }],
++      promptSeqs: [SessionSeq(6)],
++      draft: '',
++    }
+     const regressive = {
+       type: 'turn/start',
+       seq: SessionSeq(9),
+@@ -249,6 +329,7 @@ describe('turn outline projection unit', () => {
+             { turn: 2, seq: 1, prompt: '', response: '' },
+             { turn: 2, seq: 4, prompt: '', response: '' },
+           ],
++          promptSeqs: [null, null],
+           draft: '',
+         },
+       },
+@@ -262,6 +343,21 @@ describe('turn outline projection unit', () => {
+             { turn: 1, seq: 1, prompt: 'ok', response: 'done' },
+             { turn: 2, seq: 4, prompt: '', response: '' },
+           ],
++          promptSeqs: [2],
++          draft: '',
++        },
++      },
++    }, [], SessionLogOffset(0), session.header, session.inheritedEventCount)).toThrow(/align with its turns/)
++    expect(() => ctx.sessionProjections.restore({
++      ...checkpoint,
++      turnOutline: {
++        ...row!,
++        val: {
++          turns: [
++            { turn: 1, seq: 1, prompt: 'ok', response: 'done' },
++            { turn: 2, seq: 4, prompt: '', response: '' },
++          ],
++          promptSeqs: [2, null],
+           draft: '',
+         },
+       },
 diff --git a/packages/test-support/client-runtime/src/sessions.ts b/packages/test-support/client-runtime/src/sessions.ts
 index 419e155af7..d0e2268f86 100644
 --- a/packages/test-support/client-runtime/src/sessions.ts
