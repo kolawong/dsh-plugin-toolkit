@@ -24,15 +24,32 @@ window.__ModuleLoader__.load({
     const React = require("react");
     const { useState, useEffect, useLayoutEffect, useRef, memo } = React;
     const { jsx, jsxs } = require("react/jsx-runtime");
+    const primitives = require("@deepseek-ai/dsh-client-ui-primitives");
+    if (primitives && typeof primitives === "object") {
+      for (const key of Object.keys(primitives)) {
+        if (key.startsWith("Icon") && key.endsWith("Regular")) {
+          const base = key.slice(0, -7);
+          for (const suffix of ["12", "14", "16", "18", "20", "24", ""]) {
+            if (!primitives[base + suffix]) primitives[base + suffix] = primitives[key];
+          }
+        }
+      }
+    }
     const {
-      Modal, IconChevronDownOutline14, projectUserText, JsonBlock,
-      IconCopyOutline16, IconCheckOutline16, Tooltip,
-      FileTypeIcon, fileExtension, fileSizeText,
-      IconPersonalizationOutline16, IconNewChatOutline16, IconEditOutline16,
-      IconClockOutline16, IconGlobeOutline14, diffTotals,
-      IconBranchOutline16, IconApiOutline14,
-      IconGaugeOutline16,
-    } = require("@deepseek-ai/dsh-client-ui-primitives");
+      Modal, projectUserText, JsonBlock, Tooltip,
+      FileTypeIcon, fileExtension, fileSizeText, diffTotals,
+    } = primitives;
+    const IconChevronDownOutline14 = primitives.IconChevronDownOutlineRegular || primitives.IconChevronDownOutline14 || (() => null);
+    const IconCopyOutline16 = primitives.IconCopyOutlineRegular || primitives.IconCopyOutline16 || (() => null);
+    const IconCheckOutline16 = primitives.IconCheckOutlineRegular || primitives.IconCheckOutline16 || (() => null);
+    const IconPersonalizationOutline16 = primitives.IconPersonalizationOutlineRegular || primitives.IconPersonalizationOutline16 || (() => null);
+    const IconNewChatOutline16 = primitives.IconNewChatOutlineRegular || primitives.IconNewChatOutline16 || (() => null);
+    const IconEditOutline16 = primitives.IconEditOutlineRegular || primitives.IconEditOutline16 || (() => null);
+    const IconClockOutline16 = primitives.IconClockOutlineRegular || primitives.IconClockOutline16 || (() => null);
+    const IconGlobeOutline14 = primitives.IconGlobeOutlineRegular || primitives.IconGlobeOutline14 || (() => null);
+    const IconBranchOutline16 = primitives.IconBranchOutlineRegular || primitives.IconBranchOutline16 || (() => null);
+    const IconApiOutline14 = primitives.IconApiOutlineRegular || primitives.IconApiOutline14 || (() => null);
+    const IconGaugeOutline16 = primitives.IconGaugeOutlineRegular || primitives.IconGaugeOutline16 || (() => null);
 
     /** Fallback model route; the live value comes from the settings section. */
     const MODELS_PATH = "/api/toolkit/models";
@@ -1855,15 +1872,19 @@ window.__ModuleLoader__.load({
      * produced-files tail carried.
      */
     function TurnChangeReport(props) {
-      const { matched, openFile, isLoopback, ensureWorkspacePathOpen, revealPath, useWorkspacePathOpen, t } = props;
+      const { matched: rawMatched, openFile, isLoopback, ensureWorkspacePathOpen, revealPath, useWorkspacePathOpen, t } = props;
       // Both faces arrive as functions because the slot's inject result is
       // memoized: reading the value at registration time froze it (see the
       // turnTail registration in apply).
       useEffect(() => { ensureWorkspacePathOpen?.(); }, [ensureWorkspacePathOpen]);
       const hostCanOpenPath = useWorkspacePathOpen?.((available) => available === true);
       const canOpenPath = isLoopback?.() === true && hostCanOpenPath === true;
-      const { files, added, removed } = matched;
       const [expanded, setExpanded] = useState(false);
+
+      const matched = rawMatched ?? selectTurnChanges(props);
+      if (!matched || !Array.isArray(matched.files) || matched.files.length === 0) return null;
+
+      const { files, added, removed } = matched;
       const shown = expanded ? files : files.slice(0, REPORT_SHOWN_LIMIT);
       const hidden = files.length - shown.length;
       const countLabel = files.length === 1
@@ -4316,7 +4337,7 @@ window.__ModuleLoader__.load({
       }
     }
 
-    exports.inject = ["locale", "slots"];
+    exports.inject = ["locale", "slots", "configForms"];
     exports.apply = function apply(ctx) {
       ctx.locale.register(NS, { zh, en });
       localeFace = ctx.locale;

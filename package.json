@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-toolkit",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "DeepSeek Harness personal toolkit: small runtime-toggleable quality-of-life optimizations, each shipped as one card in the Toolkit settings page. Optimizations: workspaceless chat, edit-and-resend last message, activity grouping in the sidebar, Chinese slash-menu descriptions, a per-turn change report, the OpenCode Go per-conversation session header, and model-capability sync for an llm-pi-ai route (moved here from dsh-plugin-quota-badges).",
   "type": "module",
   "main": "index.js",
@@ -68,7 +68,9 @@
     "smoke": "node scripts/smoke.mjs",
     "smoke:client": "node scripts/client-smoke.mjs",
     "host:apply": "node scripts/apply-host-patch.mjs",
-    "host:verify": "node scripts/e2e-verify-rewrite.mjs"
+    "host:verify": "node scripts/e2e-verify-rewrite.mjs",
+    "build": "node -c index.js && node -c client.js",
+    "prepare": "node -c index.js && node -c client.js"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=4.0.0",

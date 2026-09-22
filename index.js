@@ -132,6 +132,7 @@ export const Config = z.object({
   /** One-time marker: the former quota-badges model settings were adopted here. */
   modelsMigratedFromQuotaBadges: z.boolean().default(false),
 });
+Config.meta.volatile = true;
 
 /** Composition-layer config as Cordis resolved it at apply time. */
 let pluginConfig = {};
@@ -339,22 +340,37 @@ export function apply(ctx, config) {
     logger?.warn?.("[toolkit] slashI18n API install:", error);
   }
 
-  try {
-    installSettingsSection(ctx, settingsNamespace(NS), Config, {
-      ...pluginConfig,
-      chatWorkspacePath: chatPath(pluginConfig),
-    }, {
-      setSource: (current) => { source = current; },
-      onChange: () => {
+  ctx.inject(["settings"], (sctx) => {
+    try {
+      if (typeof sctx.settings?.register === "function") {
+        const scope = sctx.settings.register(settingsNamespace(NS), Config, {
+          base: {
+            ...pluginConfig,
+            chatWorkspacePath: chatPath(pluginConfig),
+          },
+        });
+        source = () => scope.get();
+        scope.watch?.(() => {
+          void ensureChatDir(currentConfig(), logger);
+          rehealModelCapability();
+        });
+      }
+    } catch (error) {
+      logger?.warn?.("[toolkit] settings registration:", error);
+    }
+  });
+
+  ctx.on("settings/document-updated", (ns) => {
+    if (ns === NS) {
+      const entries = ctx.root?.configEditor?.entries?.() || [];
+      const entry = entries.find((r) => r.options?.id === NS);
+      if (entry?.options?.config) {
+        pluginConfig = { ...pluginConfig, ...entry.options.config };
         void ensureChatDir(currentConfig(), logger);
-        // Forced vision / text-only edits apply to the already-stored route
-        // models immediately, without waiting for a restart or a sync.
         rehealModelCapability();
-      },
-    });
-  } catch (error) {
-    logger?.warn?.("[toolkit] settings registration:", error);
-  }
+      }
+    }
+  });
 
   // The no-settings-provider path: ensure the chat directory against the
   // composition entry (the scope attach also triggers this via onChange).
