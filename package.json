@@ -12,7 +12,8 @@
     },
     "./client": "./client.js",
     "./model-sync.js": "./model-sync.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
   },
   "dsh": {
     "bundle": {
@@ -61,7 +62,8 @@
     "README.md",
     "README_CN.md",
     "docs/assets/",
-    "LICENSE"
+    "LICENSE",
+    "locale/*.json"
   ],
   "scripts": {
     "test": "node --test tests/*.test.js",
