@@ -4316,14 +4316,21 @@ window.__ModuleLoader__.load({
       }
     }
 
-    exports.inject = ["locale", "slots", "settingsScope"];    exports.apply = function apply(ctx) {
+    exports.inject = ["locale", "slots"];
+    exports.apply = function apply(ctx) {
       ctx.locale.register(NS, { zh, en });
       localeFace = ctx.locale;
       ensureStyles();
 
+      const configForms = ctx.get ? ctx.get("configForms") : ctx.configForms;
+      const settingsScope = ctx.get ? ctx.get("settingsScope") : ctx.settingsScope;
       let scope;
       try {
-        scope = ctx.settingsScope.bind({ namespace: NS });
+        if (configForms?.get) {
+          scope = configForms.get(NS);
+        } else if (settingsScope?.bind) {
+          scope = settingsScope.bind({ namespace: NS });
+        }
       } catch {
         scope = undefined;
       }
