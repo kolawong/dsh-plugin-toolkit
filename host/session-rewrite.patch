@@ -1,8 +1,8 @@
 diff --git a/packages/api/session-controller/src/client/contract/session.ts b/packages/api/session-controller/src/client/contract/session.ts
-index 20c2985c80..d4cd368201 100644
+index 2c8f16c4ae..4167f781f8 100644
 --- a/packages/api/session-controller/src/client/contract/session.ts
 +++ b/packages/api/session-controller/src/client/contract/session.ts
-@@ -117,6 +117,19 @@ export interface ISession {
+@@ -118,6 +118,19 @@ export interface ISession {
     * @returns the normalized accepted title and its event seq, or the business error.
     */
    rename(title: string): Promise<RemoteResult<{ title: string; seq: SessionSeq }>>
@@ -20,13 +20,13 @@ index 20c2985c80..d4cd368201 100644
 +    content: readonly { readonly type: 'text'; readonly text: string }[],
 +  ): Promise<RemoteResult<{ accepted: true }>>
    /**
-    * Extend the history window backwards (older messages pagination).
-    * @returns completion; failures land in snapshot.openState/loadingOlder.
+    * Extend history by at least 50 messages and two Turn starts, including a
+    * partial Turn at the window's beginning. Stop at 500 messages or history
 diff --git a/packages/api/session-controller/src/client/sessions/session.ts b/packages/api/session-controller/src/client/sessions/session.ts
-index 2945f0b5c4..170a06e597 100644
+index 7ad5c637be..903d2b09fc 100644
 --- a/packages/api/session-controller/src/client/sessions/session.ts
 +++ b/packages/api/session-controller/src/client/sessions/session.ts
-@@ -345,6 +345,27 @@ export class Session implements SessionFace {
+@@ -360,6 +360,27 @@ export class Session implements SessionFace {
      return result
    }
  
@@ -55,7 +55,7 @@ index 2945f0b5c4..170a06e597 100644
     * Rename: contract session.rename 1:1. On success settle the 'title'
     * projection cell from the response's `{title, seq}` under the store's
 diff --git a/packages/api/session-controller/src/commands.ts b/packages/api/session-controller/src/commands.ts
-index f22f06fec9..6a3c661bde 100644
+index 03c697734b..e4e549e47b 100644
 --- a/packages/api/session-controller/src/commands.ts
 +++ b/packages/api/session-controller/src/commands.ts
 @@ -13,7 +13,7 @@ import type {} from '@deepseek-ai/dsh-client-file-upload'
@@ -64,10 +64,10 @@ index f22f06fec9..6a3c661bde 100644
  } from '@deepseek-ai/dsh-llm'
 -import type { MessageSource } from '@deepseek-ai/dsh-llm'
 +import type { ContentBlock, MessageSource } from '@deepseek-ai/dsh-llm'
+ import { buildForkSeed } from '@deepseek-ai/dsh-session/fork'
  import { SessionLogOffset, SessionSeq } from '@deepseek-ai/dsh-session'
  import type { SessionEvent, SessionHeader, SessionId, UserMessage } from '@deepseek-ai/dsh-session'
- import { SessionQueryError, type SessionObservation } from '@deepseek-ai/dsh-session-query'
-@@ -45,6 +45,8 @@ import type {
+@@ -46,6 +46,8 @@ import type {
    SessionPromptValue,
    SessionRenameRequest,
    SessionRenameValue,
@@ -76,7 +76,7 @@ index f22f06fec9..6a3c661bde 100644
    SessionSelectModelRequest,
    SessionSelectModelValue,
    SessionUpdateQueueRequest,
-@@ -372,6 +374,72 @@ export class SessionCommandController {
+@@ -384,6 +386,72 @@ export class SessionCommandController {
      return hasImage ? this.agents.serializeImageAdmission(agent, admit) : admit()
    }
  
@@ -149,7 +149,7 @@ index f22f06fec9..6a3c661bde 100644
    /**
     * Read one durable image after proving the Session log references it.
     * @param request - Session and attachment identities used for authorization.
-@@ -558,6 +626,50 @@ export class SessionCommandController {
+@@ -579,6 +647,50 @@ export class SessionCommandController {
    }
  }
  
@@ -201,10 +201,10 @@ index f22f06fec9..6a3c661bde 100644
    content: SessionPromptRequest['content'],
    stagedFile: (receiptId: FileUploadReceiptId) => FileAttachmentRef | undefined,
 diff --git a/packages/api/session-controller/src/index.ts b/packages/api/session-controller/src/index.ts
-index be6e8d7ebc..98224dcfae 100644
+index 5796434086..f7e562fb91 100644
 --- a/packages/api/session-controller/src/index.ts
 +++ b/packages/api/session-controller/src/index.ts
-@@ -47,6 +47,8 @@ import type {
+@@ -52,6 +52,8 @@ import type {
    SessionPromptValue,
    SessionRenameRequest,
    SessionRenameValue,
@@ -213,7 +213,7 @@ index be6e8d7ebc..98224dcfae 100644
    SessionSearchRequest,
    SessionSearchValue,
    SessionSelectModelRequest,
-@@ -327,6 +329,18 @@ export class SessionController extends TypertRemoteService {
+@@ -386,6 +388,18 @@ export class SessionController extends TypertRemoteService {
      return this.commands.rename(request)
    }
  
@@ -230,21 +230,21 @@ index be6e8d7ebc..98224dcfae 100644
 +  }
 +
    /**
-    * Fork one cold-readable completed-turn prefix into a new Session.
-    * @param request - source Session and optional event anchor.
+    * Fork one cold-readable exact event prefix into a new Session. An omitted
+    * boundary selects the latest completed-turn prefix; an open cut receives
 diff --git a/packages/api/session-controller/src/types.ts b/packages/api/session-controller/src/types.ts
-index 49c939d3f0..779fe95334 100644
+index 84378cc34d..09411963f8 100644
 --- a/packages/api/session-controller/src/types.ts
 +++ b/packages/api/session-controller/src/types.ts
-@@ -192,6 +192,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
-       readonly existingCwd?: string
-     }
+@@ -210,6 +210,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
+     'session/projections-unavailable': Record<string, never>
+     'session/writer-held': { readonly sessionId: SessionId }
      'session/agent-busy': { readonly reason: string }
 +    'session/rewrite-unavailable': { readonly sessionId: SessionId; readonly messageSeq: number }
      'session/invalid-time-zone': { readonly value: string }
      'session/workspace-attach-failed': { readonly sessionId: SessionId; readonly workspaceId: string }
      'agent-preset/conflict': {
-@@ -324,6 +325,23 @@ export interface SessionPromptValue {
+@@ -343,6 +344,23 @@ export interface SessionPromptValue {
    readonly accepted: true
  }
  
@@ -268,7 +268,7 @@ index 49c939d3f0..779fe95334 100644
  /** Durable image read request. */
  export interface SessionAttachmentRequest {
    readonly sessionId: SessionId
-@@ -377,7 +395,7 @@ export type SessionRequestId = Branded<'session-request-id'>
+@@ -398,7 +416,7 @@ export type SessionRequestId = Branded<'session-request-id'>
  declare module '@deepseek-ai/dsh-llm' {
    interface MessageSourceMap {
      /** Browser prompt correlation and optional Host-validated time zone. */
@@ -453,10 +453,10 @@ index 0000000000..01164e790a
 +  })
 +})
 diff --git a/packages/api/session-controller/tests/test-remote.ts b/packages/api/session-controller/tests/test-remote.ts
-index 721288f7dc..5a3ed39fec 100644
+index f0abf92ca0..0d3ea993ad 100644
 --- a/packages/api/session-controller/tests/test-remote.ts
 +++ b/packages/api/session-controller/tests/test-remote.ts
-@@ -53,6 +53,8 @@ import type {
+@@ -56,6 +56,8 @@ import type {
    SessionPromptValue,
    SessionRenameRequest,
    SessionRenameValue,
@@ -465,7 +465,7 @@ index 721288f7dc..5a3ed39fec 100644
    SessionSearchRequest,
    SessionSearchValue,
    SessionSelectModelRequest,
-@@ -70,6 +72,7 @@ export interface TestSessionRemote {
+@@ -77,6 +79,7 @@ export interface TestSessionRemote {
    selectModel(request: SessionSelectModelRequest): Promise<RemoteResult<SessionSelectModelValue>>
    modelCatalog(): Promise<RemoteResult<ModelCatalog>>
    rename(request: SessionRenameRequest): Promise<RemoteResult<SessionRenameValue>>
@@ -473,7 +473,7 @@ index 721288f7dc..5a3ed39fec 100644
    fork(request: SessionForkRequest): Promise<RemoteResult<SessionForkValue>>
    prompt(request: SessionPromptRequest, signal?: AbortSignal): Promise<RemoteResult<SessionPromptValue>>
    attachment(request: SessionAttachmentRequest): Promise<RemoteResult<SessionAttachmentValue>>
-@@ -344,6 +347,7 @@ export function createSessionTestRemote(
+@@ -359,6 +362,7 @@ export function createSessionTestRemote(
      selectModel: request => remoteResult(() => direct.selectModel(request)),
      modelCatalog: () => remoteResult(() => direct.modelCatalog()),
      rename: request => remoteResult(() => direct.rename(request)),
@@ -482,11 +482,11 @@ index 721288f7dc..5a3ed39fec 100644
      prompt: (request, signal = new AbortController().signal) => remoteResult(
        () => direct.prompt(request, signal),
 diff --git a/packages/client/ui-chat/src/client/conversation-nodes/message.ts b/packages/client/ui-chat/src/client/conversation-nodes/message.ts
-index 823bbe3c93..ec9fe61262 100644
+index 4181a40bcb..2a6ef323cf 100644
 --- a/packages/client/ui-chat/src/client/conversation-nodes/message.ts
 +++ b/packages/client/ui-chat/src/client/conversation-nodes/message.ts
-@@ -40,13 +40,20 @@ function isCompactionCheckpoint(event: Parameters<ConversationNodeDefinition['ma
-   return source.kind === 'plugin' && source.plugin === 'compact'
+@@ -42,13 +42,20 @@ function isCompactionCheckpoint(event: Parameters<ConversationNodeDefinition['ma
+   return source.kind === 'compact-checkpoint'
  }
  
 +/** An in-place edit rewrite: `user/message` surface replacement marked `origin: 'edit'`. */
@@ -500,15 +500,15 @@ index 823bbe3c93..ec9fe61262 100644
  export const messageDefinition: ConversationNodeDefinition<MessageNode> = {
    kind: 'input-message',
    target: 'chat',
-   match: event => event.type === 'user/message'
--    && isAppendSurfaceEvent(event)
-     && !isCompactionCheckpoint(event)
-+    && (isAppendSurfaceEvent(event) || isEditRewrite(event))
-     ? { id: String(event.data.id), role: 'start' }
-     : null,
-   start: (_context, match, reader) => {
+   match: (event) => {
+     if (event.type === 'user/message') {
+-      return isAppendSurfaceEvent(event) && !isCompactionCheckpoint(event)
++      return (isAppendSurfaceEvent(event) || isEditRewrite(event)) && !isCompactionCheckpoint(event)
+         ? { id: String(event.data.id), role: 'start' }
+         : null
+     }
 diff --git a/packages/client/ui-conversation/src/client/conversation/assembly.ts b/packages/client/ui-conversation/src/client/conversation/assembly.ts
-index a6d453c65b..a74fdb3b98 100644
+index fe4d49505c..1165b0eda9 100644
 --- a/packages/client/ui-conversation/src/client/conversation/assembly.ts
 +++ b/packages/client/ui-conversation/src/client/conversation/assembly.ts
 @@ -2,7 +2,7 @@
@@ -519,8 +519,8 @@ index a6d453c65b..a74fdb3b98 100644
 +  ISessions, SessionBinding, SessionEventLikeEntry, SessionEventSource, SessionEventWindow,
  } from '@deepseek-ai/dsh-api-session-controller/client'
  import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session/types'
- import {
-@@ -95,7 +95,7 @@ class BoundConversation implements ConversationBinding {
+ import { WeakMapWithValues } from '@deepseek-ai/dsh-util-values'
+@@ -97,7 +97,7 @@ class BoundConversation implements ConversationBinding {
  
    private replace(window: SessionEventWindow): void {
      this.revision = window.revision
@@ -529,7 +529,7 @@ index a6d453c65b..a74fdb3b98 100644
    }
  
    private accept(window: SessionEventWindow): void {
-@@ -110,6 +110,12 @@ class BoundConversation implements ConversationBinding {
+@@ -112,6 +112,12 @@ class BoundConversation implements ConversationBinding {
          this.publish(this.assembler.prepend(window.change.entries, window.hasMore))
          return
        case 'append': {
@@ -542,7 +542,7 @@ index a6d453c65b..a74fdb3b98 100644
          let publication: ConversationPublication = 'none'
          for (const event of window.change.entries) {
            const next = this.assembler.append(event)
-@@ -165,6 +171,50 @@ class BoundConversation implements ConversationBinding {
+@@ -167,6 +173,50 @@ class BoundConversation implements ConversationBinding {
    }
  }
  
@@ -594,10 +594,10 @@ index a6d453c65b..a74fdb3b98 100644
    readonly source: SessionBinding
    readonly binding: BoundConversation
 diff --git a/packages/client/ui-conversation/tests/conversation-registry.client.spec.ts b/packages/client/ui-conversation/tests/conversation-registry.client.spec.ts
-index 2d3a003756..20b4a1da50 100644
+index 2f57b05f27..af18299378 100644
 --- a/packages/client/ui-conversation/tests/conversation-registry.client.spec.ts
 +++ b/packages/client/ui-conversation/tests/conversation-registry.client.spec.ts
-@@ -54,6 +54,7 @@ function fakeSession(): SessionFace {
+@@ -53,6 +53,7 @@ function fakeSession(): SessionFace {
      updateQueue: () => Promise.reject(new Error('unused fake Session operation')),
      cancel: () => Promise.reject(new Error('unused fake Session operation')),
      rename: () => Promise.reject(new Error('unused fake Session operation')),
@@ -606,10 +606,10 @@ index 2d3a003756..20b4a1da50 100644
      loadThrough: () => Promise.reject(new Error('unused fake Session operation')),
      command: () => Promise.reject(new Error('unused fake Session operation')),
 diff --git a/packages/core/agent-loop/src/agent.ts b/packages/core/agent-loop/src/agent.ts
-index 4ea7593551..7701579528 100644
+index 98114f53cd..648e8d9050 100644
 --- a/packages/core/agent-loop/src/agent.ts
 +++ b/packages/core/agent-loop/src/agent.ts
-@@ -27,7 +27,7 @@ import { deepFreeze } from '@deepseek-ai/dsh-util-values'
+@@ -27,7 +27,7 @@ import { assertNever, deepFreeze } from '@deepseek-ai/dsh-util-values'
  import type { Scope } from '@deepseek-ai/dsh-scope'
  import { createScope } from '@deepseek-ai/dsh-scope'
  import type { EpochHeader, RequestContext, Session, SessionId, TurnEndReason, UserMessage } from '@deepseek-ai/dsh-session'
@@ -618,7 +618,7 @@ index 4ea7593551..7701579528 100644
  import { joinContextSections, renderContextSections, renderPrompt } from '@deepseek-ai/dsh-system-prompt'
  import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
  import type {} from '@deepseek-ai/dsh-session-projection'
-@@ -373,7 +373,11 @@ export class ReactLoopAgent implements Agent {
+@@ -400,7 +400,11 @@ export class ReactLoopAgent implements Agent {
        }
        if (firstAttempt) {
          for (const message of decision.messages) {
@@ -631,7 +631,7 @@ index 4ea7593551..7701579528 100644
          }
        }
        firstAttempt = false
-@@ -550,6 +554,48 @@ export class ReactLoopAgent implements Agent {
+@@ -577,6 +581,48 @@ export class ReactLoopAgent implements Agent {
      return { config, ...preparedCall === undefined ? {} : { preparedCall } }
    }
  
@@ -805,11 +805,11 @@ index 0000000000..f5d10b0275
 +  })
 +})
 diff --git a/packages/llm/llm/src/message.ts b/packages/llm/llm/src/message.ts
-index 05af6bae3e..63a65d792f 100644
+index d96a63edb6..b78d8b841d 100644
 --- a/packages/llm/llm/src/message.ts
 +++ b/packages/llm/llm/src/message.ts
-@@ -100,7 +100,13 @@ export type ContextFormed =
-  * Merge-extensible sum type — plugins add their own `kind`s.
+@@ -108,7 +108,13 @@ export type ContextFormed =
+  * producer's kind, and consumers fall through unknown kinds.
   */
  export interface MessageSourceMap {
 -  user: { kind: 'user' }
@@ -820,9 +820,9 @@ index 05af6bae3e..63a65d792f 100644
 +   * distinguish an in-place rewrite from an ordinary appended message.
 +   */
 +  user: { kind: 'user'; origin?: 'edit'; rewriteSeq?: number }
-   plugin: { kind: 'plugin'; plugin: string } & ContextFormed
    model: ModelMessageSource
    tool: ToolMessageSource
+   'system-prompt': SystemPromptMessageSource
 diff --git a/packages/session/session-title/src/index.ts b/packages/session/session-title/src/index.ts
 index 8d9a550a51..f097bb0843 100644
 --- a/packages/session/session-title/src/index.ts
@@ -1294,10 +1294,10 @@ index c4ccbcdab3..bccbb0151d 100644
    readonly draft: string
  }
 diff --git a/packages/session/session-turn-outline/tests/projection.spec.ts b/packages/session/session-turn-outline/tests/projection.spec.ts
-index 959e5587b4..2f2542a744 100644
+index c01acf8aa5..b567e948a6 100644
 --- a/packages/session/session-turn-outline/tests/projection.spec.ts
 +++ b/packages/session/session-turn-outline/tests/projection.spec.ts
-@@ -35,6 +35,22 @@ function appendPrompt(session: Session, text: string): SessionSeq {
+@@ -42,6 +42,22 @@ function appendPrompt(session: Session, text: string): SessionSeq {
    }), { surfaceOp: 'append' }).seq
  }
  
@@ -1320,7 +1320,7 @@ index 959e5587b4..2f2542a744 100644
  /** Append one assembled assistant message with a single text block. */
  function appendAssistant(session: Session, turn: number, step: number, text: string): void {
    session.append('assistant/message', {
-@@ -65,7 +81,7 @@ describe('turn outline projection unit', () => {
+@@ -72,7 +88,7 @@ describe('turn outline projection unit', () => {
      const { ctx, session } = await harness(true)
      expect(outlineOf(ctx, session)).toEqual([])
      expect(ctx.sessionProjections.checkpoint(session).turnOutline)
@@ -1329,7 +1329,7 @@ index 959e5587b4..2f2542a744 100644
    })
  
    it('folds each turn with its boundary seq, first prompt, and turn-end response', async () => {
-@@ -143,6 +159,58 @@ describe('turn outline projection unit', () => {
+@@ -150,6 +166,58 @@ describe('turn outline projection unit', () => {
      ])
    })
  
@@ -1388,7 +1388,7 @@ index 959e5587b4..2f2542a744 100644
    it('pushes at most three times per turn: boundary, prompt, and settled response', async () => {
      const { ctx, session } = await harness(true)
      const changes: { seq: SessionSeq; last: TurnOutlineEntry | undefined }[] = []
-@@ -179,7 +247,11 @@ describe('turn outline projection unit', () => {
+@@ -186,7 +254,11 @@ describe('turn outline projection unit', () => {
        time: 0,
        data: { message: { content: blocks } },
      }) as unknown as SessionEvent
@@ -1401,7 +1401,7 @@ index 959e5587b4..2f2542a744 100644
      // Non-text blocks are skipped; whitespace-heavy short blocks cross the raw
      // reading bound early, so the collapsed (short) draft still marks the
      // unread remainder with an ellipsis.
-@@ -198,16 +270,24 @@ describe('turn outline projection unit', () => {
+@@ -205,16 +277,24 @@ describe('turn outline projection unit', () => {
        time: 0,
        data: { turn: 1, reason: { kind: 'completed' } },
      } as unknown as SessionEvent
@@ -1429,7 +1429,7 @@ index 959e5587b4..2f2542a744 100644
      const regressive = {
        type: 'turn/start',
        seq: SessionSeq(9),
-@@ -249,6 +329,7 @@ describe('turn outline projection unit', () => {
+@@ -256,6 +336,7 @@ describe('turn outline projection unit', () => {
              { turn: 2, seq: 1, prompt: '', response: '' },
              { turn: 2, seq: 4, prompt: '', response: '' },
            ],
@@ -1437,7 +1437,7 @@ index 959e5587b4..2f2542a744 100644
            draft: '',
          },
        },
-@@ -262,6 +343,21 @@ describe('turn outline projection unit', () => {
+@@ -269,6 +350,21 @@ describe('turn outline projection unit', () => {
              { turn: 1, seq: 1, prompt: 'ok', response: 'done' },
              { turn: 2, seq: 4, prompt: '', response: '' },
            ],
@@ -1460,10 +1460,10 @@ index 959e5587b4..2f2542a744 100644
          },
        },
 diff --git a/packages/test-support/client-runtime/src/sessions.ts b/packages/test-support/client-runtime/src/sessions.ts
-index 419e155af7..d0e2268f86 100644
+index 5ad261b5b0..b13d13af6f 100644
 --- a/packages/test-support/client-runtime/src/sessions.ts
 +++ b/packages/test-support/client-runtime/src/sessions.ts
-@@ -167,6 +167,14 @@ export class FixtureSession implements SessionFace {
+@@ -177,6 +177,14 @@ export class FixtureSession implements SessionFace {
    rename(): never {
      throw new Error(`test session "${this.sessionId}": rename is not stubbed — supply it on the fixture's session face`)
    }
@@ -1477,4 +1477,4 @@ index 419e155af7..d0e2268f86 100644
 +  }
  }
  
- /** One live test session: fixture-derived stores plus its minted scope state. */
+ /** Catalog fixture data remains available across live Client generations. */
