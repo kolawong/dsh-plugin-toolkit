@@ -71,8 +71,7 @@
     "smoke:client": "node scripts/client-smoke.mjs",
     "host:apply": "node scripts/apply-host-patch.mjs",
     "host:verify": "node scripts/e2e-verify-rewrite.mjs",
-    "build": "node -c index.js && node -c client.js",
-    "prepare": "node -c index.js && node -c client.js"
+    "build": "node -c index.js && node -c client.js"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=4.0.0",
