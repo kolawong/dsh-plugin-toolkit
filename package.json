@@ -63,7 +63,8 @@
     "README_CN.md",
     "docs/assets/",
     "LICENSE",
-    "locale/*.json"
+    "locale/*.json",
+    "icon.svg"
   ],
   "scripts": {
     "test": "node --test tests/*.test.js",
@@ -77,5 +78,6 @@
     "@deepseek-ai/cordis": ">=4.0.0",
     "@deepseek-ai/schemastery": ">=3.0.0",
     "@deepseek-ai/dsh-settings": "*"
-  }
+  },
+  "icon": "./icon.svg"
 }
