@@ -120,6 +120,7 @@ test("modelConfig: applies every default and respects overrides", () => {
   assert.deepEqual(defaults.textOnly, []);
   assert.equal(defaults.migratedFromLegacy, false);
   assert.equal(defaults.timeoutSec, 10);
+  assert.deepEqual(defaults.routeBaseURLs, {});
 
   const custom = modelConfig({
     optimizations: { modelCapability: false },
@@ -131,6 +132,12 @@ test("modelConfig: applies every default and respects overrides", () => {
     modelsSyncPath: "/api/custom/sync",
     modelsEnrichFromRegistry: false,
     modelsRegistryProvider: "vendor",
+    modelsRouteBaseURLs: {
+      "kimi-coding": "https://api.moonshot.cn/v1",
+      "minimax-cn": { baseURL: "https://api.minimaxi.com/anthropic", api: "anthropic-messages" },
+      empty: "",
+      "no-url": { api: "openai-completions" },
+    },
     modelsVision: ["a"],
     modelsTextOnly: ["b"],
     modelsTimeoutSec: 3,
@@ -143,6 +150,14 @@ test("modelConfig: applies every default and respects overrides", () => {
   assert.equal(custom.syncPath, "/api/custom/sync");
   assert.equal(custom.enrichFromRegistry, false);
   assert.equal(custom.registryProvider, "vendor");
+  assert.deepEqual(
+    custom.routeBaseURLs,
+    {
+      "kimi-coding": "https://api.moonshot.cn/v1",
+      "minimax-cn": { baseURL: "https://api.minimaxi.com/anthropic", api: "anthropic-messages" },
+    },
+    "empty entries are dropped; an object entry keeps its protocol",
+  );
   assert.deepEqual(custom.vision, ["a"]);
   assert.deepEqual(custom.textOnly, ["b"]);
   assert.equal(custom.migratedFromLegacy, true);
@@ -402,6 +417,263 @@ test("installDiscoveryEnrichment: a probe failure falls back to the catalog answ
     fetchStub.restore();
   }
 });
+// ── multi-route discovery enrichment ────────────────────────────────────────
+
+/**
+ * A discovery-enrichment context: the llm discoveries map plus an optional
+ * llm-pi-ai settings descriptor and credentials service, matching the shape
+ * `installModelCapability` hands to `installDiscoveryEnrichment`.
+ * @param {Map<string, Function>} discoveries - the runtime's discovery map.
+ * @param {{config?: object, describe?: Function, credentials?: object}} [options]
+ * @returns {object} the context under test.
+ */
+function makeEnrichmentCtx(discoveries, { config, describe, credentials } = {}) {
+  const disposers = [];
+  const ctx = {
+    logger: { info() {}, warn() {} },
+    config: () => modelConfig(config ?? BASE_CONFIG),
+    llm: { discoveries },
+    effect: (fn) => { disposers.push(fn()); },
+    get: (name) => (name === "credentials" ? credentials : undefined),
+  };
+  if (describe !== undefined) {
+    ctx.settings = { describe };
+  }
+  return { ctx, disposers };
+}
+
+/** One llm-pi-ai descriptor with the given stored route profiles. */
+function storedRoutes(providers) {
+  return () => [{ ns: LLM_PI_AI_NS, revision: 3, user: { providers } }];
+}
+
+test("installDiscoveryEnrichment: a non-primary route with a draft endpoint is probed and merged", async () => {
+  resetModelSyncCaches();
+  const discoveries = new Map([[LLM_PI_AI_NS, async () => [{ id: "cline-pass/glm-5.3" }]]]);
+  const { ctx } = makeEnrichmentCtx(discoveries);
+  const seen = [];
+  const fetchStub = stubFetch((url, init) => {
+    seen.push({ url, init });
+    return listingResponse(["cline-pass/glm-5.3", "cline-pass/new-model"]);
+  });
+  try {
+    installDiscoveryEnrichment(ctx);
+    const answer = await discoveries.get(LLM_PI_AI_NS)({
+      provider: "clinepass",
+      baseURL: "https://api.cline.bot/api/v1",
+      api: "openai-completions",
+      apiKey: "sk-draft",
+    });
+    // The live-only id joins the catalog answer, and the tag proves the probe
+    // really happened (the sync route refuses an untagged answer).
+    assert.deepEqual(answer.map((model) => model.id), ["cline-pass/glm-5.3", "cline-pass/new-model"]);
+    assert.equal(typeof answer.liveProbedAt, "number");
+    assert.equal(seen[0].url, "https://api.cline.bot/api/v1/models");
+    assert.equal(seen[0].init.headers.Authorization, "Bearer sk-draft");
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+test("installDiscoveryEnrichment: a non-primary route resolves its stored endpoint and apiKeyEnv credential", async () => {
+  resetModelSyncCaches();
+  process.env.CLINEPASS_API_KEY = "sk-from-env";
+  const discoveries = new Map([[LLM_PI_AI_NS, async () => [{ id: "cline-pass/glm-5.3" }]]]);
+  const { ctx } = makeEnrichmentCtx(discoveries, {
+    describe: storedRoutes({
+      clinepass: { baseURL: "https://api.cline.bot/api/v1", api: "openai-completions", apiKeyEnv: "CLINEPASS_API_KEY" },
+    }),
+  });
+  const seen = [];
+  const fetchStub = stubFetch((url, init) => {
+    seen.push({ url, init });
+    return listingResponse(["cline-pass/new-model"]);
+  });
+  try {
+    installDiscoveryEnrichment(ctx);
+    // The request carries no baseURL and no key: both come from the stored
+    // route profile, the same way llm-pi-ai resolves them for its own calls.
+    // Live ids lead in endpoint order; catalog-only ids follow.
+    const answer = await discoveries.get(LLM_PI_AI_NS)({ provider: "clinepass" });
+    assert.deepEqual(answer.map((model) => model.id), ["cline-pass/new-model", "cline-pass/glm-5.3"]);
+    assert.equal(seen[0].url, "https://api.cline.bot/api/v1/models");
+    assert.equal(seen[0].init.headers.Authorization, "Bearer sk-from-env");
+  } finally {
+    fetchStub.restore();
+    delete process.env.CLINEPASS_API_KEY;
+  }
+});
+
+test("installDiscoveryEnrichment: the credentials service wins over the launch environment", async () => {
+  resetModelSyncCaches();
+  process.env.CLINEPASS_API_KEY = "sk-from-env";
+  const discoveries = new Map([[LLM_PI_AI_NS, async () => [{ id: "known" }]]]);
+  const { ctx } = makeEnrichmentCtx(discoveries, {
+    describe: storedRoutes({ clinepass: { baseURL: "https://api.cline.bot/api/v1", apiKeyEnv: "CLINEPASS_API_KEY" } }),
+    credentials: { resolve: async (ref) => (ref === "CLINEPASS_API_KEY" ? { value: "sk-from-service" } : undefined) },
+  });
+  const seen = [];
+  const fetchStub = stubFetch((url, init) => {
+    seen.push({ url, init });
+    return listingResponse(["known"]);
+  });
+  try {
+    installDiscoveryEnrichment(ctx);
+    await discoveries.get(LLM_PI_AI_NS)({ provider: "clinepass" });
+    assert.equal(seen[0].init.headers.Authorization, "Bearer sk-from-service");
+  } finally {
+    fetchStub.restore();
+    delete process.env.CLINEPASS_API_KEY;
+  }
+});
+
+test("installDiscoveryEnrichment: a route with no resolvable endpoint keeps the catalog answer", async () => {
+  resetModelSyncCaches();
+  const discoveries = new Map([[LLM_PI_AI_NS, async () => [{ id: "k3" }]]]);
+  const { ctx } = makeEnrichmentCtx(discoveries, { describe: storedRoutes({ "kimi-coding": { apiKeyEnv: "KIMI_CODING_API_KEY" } }) });
+  const fetchStub = stubFetch(() => listingResponse(["live"]));
+  try {
+    installDiscoveryEnrichment(ctx);
+    // A catalog route whose profile names no endpoint has nothing to probe:
+    // guessing a URL would be worse than the catalog answer it already has.
+    const answer = await discoveries.get(LLM_PI_AI_NS)({ provider: "kimi-coding" });
+    assert.deepEqual(answer, [{ id: "k3" }]);
+    assert.equal(fetchStub.urls.length, 0, "no network call without an endpoint");
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+test("installDiscoveryEnrichment: modelsRouteBaseURLs supplies an endpoint for a catalog route", async () => {
+  resetModelSyncCaches();
+  process.env.KIMI_CODING_API_KEY = "sk-kimi";
+  const discoveries = new Map([[LLM_PI_AI_NS, async () => [{ id: "k3" }]]]);
+  const { ctx } = makeEnrichmentCtx(discoveries, {
+    config: { ...BASE_CONFIG, modelsRouteBaseURLs: { "kimi-coding": "https://api.moonshot.cn/v1" } },
+    describe: storedRoutes({ "kimi-coding": { apiKeyEnv: "KIMI_CODING_API_KEY" } }),
+  });
+  const fetchStub = stubFetch(() => listingResponse(["k3", "k3.5"]));
+  try {
+    installDiscoveryEnrichment(ctx);
+    const answer = await discoveries.get(LLM_PI_AI_NS)({ provider: "kimi-coding" });
+    assert.deepEqual(answer.map((model) => model.id), ["k3", "k3.5"]);
+    assert.equal(fetchStub.urls[0], "https://api.moonshot.cn/v1/models");
+  } finally {
+    fetchStub.restore();
+    delete process.env.KIMI_CODING_API_KEY;
+  }
+});
+
+test("installDiscoveryEnrichment: an object override carries the route's protocol", async () => {
+  resetModelSyncCaches();
+  process.env.MINIMAX_CN_API_KEY = "sk-minimax";
+  const discoveries = new Map([[LLM_PI_AI_NS, async () => [{ id: "MiniMax-M3" }]]]);
+  const { ctx } = makeEnrichmentCtx(discoveries, {
+    config: {
+      ...BASE_CONFIG,
+      modelsRouteBaseURLs: { "minimax-cn": { baseURL: "https://api.minimaxi.com/anthropic", api: "anthropic-messages" } },
+    },
+    describe: storedRoutes({ "minimax-cn": { apiKeyEnv: "MINIMAX_CN_API_KEY" } }),
+  });
+  const seen = [];
+  const fetchStub = stubFetch((url, init) => {
+    seen.push({ url, init });
+    return listingResponse(["MiniMax-M3", "MiniMax-M4"]);
+  });
+  try {
+    installDiscoveryEnrichment(ctx);
+    const answer = await discoveries.get(LLM_PI_AI_NS)({ provider: "minimax-cn" });
+    assert.deepEqual(answer.map((model) => model.id), ["MiniMax-M3", "MiniMax-M4"]);
+    // The Anthropic listing URL and auth shape come from the override, since
+    // the route's profile states neither.
+    assert.equal(seen[0].url, "https://api.minimaxi.com/anthropic/v1/models?limit=1000");
+    assert.equal(seen[0].init.headers["x-api-key"], "sk-minimax");
+    assert.equal(seen[0].init.headers.Authorization, undefined);
+  } finally {
+    fetchStub.restore();
+    delete process.env.MINIMAX_CN_API_KEY;
+  }
+});
+
+test("installDiscoveryEnrichment: deployment headers authenticate a keyless route", async () => {
+  resetModelSyncCaches();
+  const discoveries = new Map([[LLM_PI_AI_NS, async () => [{ id: "known" }]]]);
+  const { ctx } = makeEnrichmentCtx(discoveries, {
+    describe: storedRoutes({
+      gateway: { baseURL: "https://gateway.test/v1", headers: { Authorization: "Token gateway-owned" } },
+    }),
+  });
+  const seen = [];
+  const fetchStub = stubFetch((url, init) => {
+    seen.push({ url, init });
+    return listingResponse(["known", "fresh"]);
+  });
+  try {
+    installDiscoveryEnrichment(ctx);
+    const answer = await discoveries.get(LLM_PI_AI_NS)({ provider: "gateway" });
+    assert.deepEqual(answer.map((model) => model.id), ["known", "fresh"]);
+    assert.equal(seen[0].init.headers.Authorization, "Token gateway-owned");
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+test("installDiscoveryEnrichment: the primary route keeps its modelsBaseURL/modelsApiKey fallback", async () => {
+  resetModelSyncCaches();
+  const discoveries = new Map([[LLM_PI_AI_NS, async () => [{ id: "catalog-only" }]]]);
+  const { ctx } = makeEnrichmentCtx(discoveries, {
+    config: { ...BASE_CONFIG, modelsBaseURL: "https://primary.test/v1", modelsApiKey: "sk-primary" },
+  });
+  const seen = [];
+  const fetchStub = stubFetch((url, init) => {
+    seen.push({ url, init });
+    return listingResponse(["live-only"]);
+  });
+  try {
+    installDiscoveryEnrichment(ctx);
+    // No stored profile and no draft fields: the legacy config still drives the
+    // primary route, so an existing setup is untouched by the multi-route change.
+    const answer = await discoveries.get(LLM_PI_AI_NS)({ provider: "opencode-go" });
+    assert.deepEqual(answer.map((model) => model.id), ["live-only", "catalog-only"]);
+    assert.equal(seen[0].url, "https://primary.test/v1/models");
+    assert.equal(seen[0].init.headers.Authorization, "Bearer sk-primary");
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+test("installDiscoveryEnrichment: a non-primary route reads its own models.dev directory", async () => {
+  resetModelSyncCaches();
+  const discoveries = new Map([[LLM_PI_AI_NS, async () => [{ id: "known" }]]]);
+  const { ctx } = makeEnrichmentCtx(discoveries, {
+    config: { ...BASE_CONFIG, modelsEnrichFromRegistry: true, modelsRegistryProvider: "opencode-go" },
+    describe: storedRoutes({ clinepass: { baseURL: "https://api.cline.bot/api/v1" } }),
+  });
+  const registryUrls = [];
+  const fetchStub = stubFetch((url) => {
+    if (url.includes("models.dev") || url.includes("jsdelivr") || url.includes("raw.githubusercontent")) {
+      registryUrls.push(url);
+      return new Response('name = "Model"\n[limit]\ncontext = 123\noutput = 45\n', { status: 200 });
+    }
+    return listingResponse(["known"]);
+  });
+  try {
+    installDiscoveryEnrichment(ctx);
+    const answer = await discoveries.get(LLM_PI_AI_NS)({ provider: "clinepass", apiKey: "sk-draft" });
+    assert.deepEqual(answer.map((model) => model.id), ["known"]);
+    assert.ok(
+      registryUrls.some((url) => url.includes("/clinepass/models/")),
+      "the route key is the models.dev directory for a non-primary route",
+    );
+    assert.ok(
+      registryUrls.every((url) => !url.includes("/opencode-go/models/")),
+      "the primary route's registry directory is not reused for another route",
+    );
+  } finally {
+    fetchStub.restore();
+  }
+});
+
 test("syncModelsOnce: a newly listed model is still enriched over a fresh registry cache", async () => {
   resetModelSyncCaches();
   const registryHits = [];
@@ -428,8 +700,50 @@ test("syncModelsOnce: a newly listed model is still enriched over a fresh regist
     fetchStub.restore();
   }
 });
-test("fetchLiveModelList: an oversized streamed listing is refused without waiting for the whole body", async () => {
-  const chunk = new Uint8Array(1024 * 1024);
+test("fetchLiveModelList: a host-root base URL retries {base}/v1/models after a 404", async () => {
+  // A real codex gateway answers 404 on /models and 401 on /v1/models: the
+  // listing lives one segment deeper than the configured base URL.
+  const fetchStub = stubFetch((url) => (url.endsWith("/v1/models")
+    ? listingResponse(["gpt-6-astra", "gpt-6-sol"])
+    : new Response("not found", { status: 404 })));
+  try {
+    const ids = await fetchLiveModelList("https://gateway.test", "sk-test", undefined, 5);
+    assert.deepEqual(ids, ["gpt-6-astra", "gpt-6-sol"]);
+    assert.deepEqual(fetchStub.urls, ["https://gateway.test/models", "https://gateway.test/v1/models"]);
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+test("fetchLiveModelList: the fallback's credential refusal beats the original 404", async () => {
+  const fetchStub = stubFetch((url) => (url.endsWith("/v1/models")
+    ? new Response('{"error":"Invalid API key"}', { status: 401 })
+    : new Response("not found", { status: 404 })));
+  try {
+    await assert.rejects(
+      () => fetchLiveModelList("https://gateway.test/v2", "sk-bad", undefined, 5),
+      (error) => error.code === "invalid-credentials",
+    );
+    assert.deepEqual(fetchStub.urls, ["https://gateway.test/v2/models", "https://gateway.test/v2/v1/models"]);
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+test("fetchLiveModelList: a /v1 base URL is never retried twice", async () => {
+  const fetchStub = stubFetch(() => new Response("not found", { status: 404 }));
+  try {
+    await assert.rejects(
+      () => fetchLiveModelList("https://gateway.test/v1", "sk-test", undefined, 5),
+      (error) => error.code === "api-error",
+    );
+    assert.deepEqual(fetchStub.urls, ["https://gateway.test/v1/models"]);
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+test("fetchLiveModelList: an oversized streamed listing is refused without waiting for the whole body", async () => {  const chunk = new Uint8Array(1024 * 1024);
   const body = new ReadableStream({
     start(controller) {
       for (let index = 0; index < 5; index += 1) controller.enqueue(chunk);

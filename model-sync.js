@@ -51,6 +51,33 @@ const LEGACY_WAIT_MS = 500;
 // ── configuration ───────────────────────────────────────────────────────────
 
 /**
+ * Normalize the per-route endpoint overrides. An entry is either the endpoint
+ * itself or `{ baseURL, api }` for a route whose protocol the profile does not
+ * state (a catalog route defaults to `openai-completions`, which is wrong for
+ * an Anthropic-compatible vendor). Empty entries are dropped, so a half-filled
+ * map can never make the plugin probe an empty URL.
+ * @param {unknown} raw - the `modelsRouteBaseURLs` config value.
+ * @returns {Record<string, string | {baseURL: string, api?: string}>} normalized overrides.
+ */
+function routeBaseURLOverrides(raw) {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (key === "") continue;
+    if (typeof value === "string") {
+      if (value.trim() !== "") out[key] = value.trim();
+      continue;
+    }
+    if (value === null || typeof value !== "object" || Array.isArray(value)) continue;
+    const baseURL = typeof value.baseURL === "string" ? value.baseURL.trim() : "";
+    if (baseURL === "") continue;
+    const api = typeof value.api === "string" ? value.api.trim() : "";
+    out[key] = api === "" ? baseURL : { baseURL, api };
+  }
+  return out;
+}
+
+/**
  * The modelCapability slice of the merged toolkit config, with every default
  * applied. `installModelCapability` hands this shape to the ported logic, so
  * the functions below never read raw toolkit config keys.
@@ -87,6 +114,14 @@ export function modelConfig(config) {
     modelsPath: typeof src.modelsPath === "string" && src.modelsPath !== ""
       ? src.modelsPath
       : "/api/toolkit/models",
+    /**
+     * Per-route endpoint overrides, keyed by llm-pi-ai route key: either the
+     * endpoint string, or `{ baseURL, api }` when the route's protocol is not
+     * stated in its profile. Only the plugin's primary route has a configured
+     * baseURL of its own; a catalog route (minimax-cn, kimi-coding, …) whose
+     * profile names no endpoint can only be probed when one is supplied here.
+     */
+    routeBaseURLs: routeBaseURLOverrides(src.modelsRouteBaseURLs),
     /** Fill missing capacities/modalities for new models from the models.dev registry. */
     enrichFromRegistry: src.modelsEnrichFromRegistry !== false,
     /** This endpoint's provider directory inside the models.dev registry. */
@@ -155,12 +190,15 @@ function listingUrl(baseURL, api) {
  * The caller's signal is honoured, including the case where it was already
  * aborted before we got here (a listener added after an abort never fires).
  * Auth follows the protocol: Anthropic-compatible endpoints take `x-api-key`,
- * everything else a Bearer token.
+ * everything else a Bearer token. Deployment headers configured on the route
+ * are laid down first, so a header the route owns (a gateway's own
+ * authorization scheme) survives while the protocol's own Accept/User-Agent
+ * and credential still decide the rest.
  * @param {string} url - absolute request URL.
- * @param {{apiKey?: string, signal?: AbortSignal, timeoutSec?: number, maxBytes?: number, api?: string}} options
+ * @param {{apiKey?: string, signal?: AbortSignal, timeoutSec?: number, maxBytes?: number, api?: string, headers?: Record<string, string>}} options
  * @returns {Promise<{response: Response, text: string, truncated: boolean}>}
  */
-async function upstreamGetText(url, { apiKey = "", signal, timeoutSec = 10, maxBytes = MAX_LISTING_BYTES, api } = {}) {
+async function upstreamGetText(url, { apiKey = "", signal, timeoutSec = 10, maxBytes = MAX_LISTING_BYTES, api, headers: extraHeaders } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(
     () => controller.abort(new ModelSyncError("network-error", "upstream request timed out after " + timeoutSec + "s")),
@@ -173,11 +211,12 @@ async function upstreamGetText(url, { apiKey = "", signal, timeoutSec = 10, maxB
   else signal?.addEventListener("abort", onAbort, { once: true });
   try {
     const headers = {
+      ...(extraHeaders ?? {}),
       Accept: "application/json, text/plain;q=0.9",
       "User-Agent": "dsh-plugin-toolkit",
     };
     if (api === "anthropic-messages") {
-      headers["anthropic-version"] = "2023-06-01";
+      headers["anthropic-version"] = headers["anthropic-version"] ?? "2023-06-01";
       // An empty key means an unauthenticated call (the models.dev registry).
       if (apiKey !== "") headers["x-api-key"] = apiKey;
     } else if (apiKey !== "") {
@@ -273,18 +312,27 @@ function extractServerErrorMessage(text) {
 /**
  * Probe one OpenAI-compatible or Anthropic-compatible listing endpoint and
  * extract its model ids.
+ *
+ * A route may authenticate with deployment headers instead of a key (a gateway
+ * that owns its own Authorization scheme), so an empty key is only refused when
+ * no header is supplied either.
  * @param {string} baseURL - the route's base URL.
  * @param {string} apiKey - resolved Bearer / x-api-key credential.
  * @param {AbortSignal | undefined} signal - caller cancellation.
  * @param {number} timeoutSec - total deadline covering headers and body.
  * @param {string} [api] - the route's wire protocol; decides URL and auth shape.
+ * @param {Record<string, string>} [headers] - deployment headers configured on the route.
  * @returns {Promise<string[]>} unique ids in endpoint order.
  * @throws {ModelSyncError} classified as invalid-credentials | api-error |
  *   parse-failed | network-error | aborted.
  */
-export async function fetchLiveModelList(baseURL, apiKey, signal, timeoutSec, api = "openai-completions") {
-  if (apiKey === "") {
-    throw new ModelSyncError("invalid-credentials", "OpenCode API key is missing, invalid, or expired");
+export async function fetchLiveModelList(baseURL, apiKey, signal, timeoutSec, api = "openai-completions", headers = {}) {
+  const extraHeaders = headers ?? {};
+  if (apiKey === "" && Object.keys(extraHeaders).length === 0) {
+    throw new ModelSyncError(
+      "invalid-credentials",
+      "model listing needs a credential: set the route's API key, or export its apiKeyEnv variable",
+    );
   }
   const url = listingUrl(baseURL, api);
   let response;
@@ -295,6 +343,7 @@ export async function fetchLiveModelList(baseURL, apiKey, signal, timeoutSec, ap
       apiKey,
       signal,
       api,
+      headers: extraHeaders,
       timeoutSec: typeof timeoutSec === "number" && timeoutSec > 0 ? timeoutSec : 10,
     }));
   } catch (error) {
@@ -302,17 +351,48 @@ export async function fetchLiveModelList(baseURL, apiKey, signal, timeoutSec, ap
     // the logs do not report a cancelled probe as a broken endpoint.
     if (signal?.aborted === true) throw new ModelSyncError("aborted", "model listing request was cancelled");
     if (error instanceof ModelSyncError) throw error;
-    throw new ModelSyncError("network-error", "OpenCode network error: " + (error?.message ?? String(error)));
+    throw new ModelSyncError("network-error", "model listing network error: " + (error?.message ?? String(error)));
+  }
+  // A gateway configured with the host root as its base URL commonly lists at
+  // `{base}/v1/models` while `{base}/models` answers 404/405 (a real codex
+  // gateway answers exactly that way). One bounded retry covers the layout
+  // instead of forcing every such route to be reconfigured; the original
+  // failure stands whenever the retry cannot improve on it.
+  const base = String(baseURL).replace(/\/+$/, "");
+  if (
+    (response.status === 404 || response.status === 405)
+    && api !== "anthropic-messages"
+    && !base.endsWith("/v1")
+  ) {
+    try {
+      const retry = await upstreamGetText(base + "/v1/models", {
+        apiKey,
+        signal,
+        api,
+        headers: extraHeaders,
+        timeoutSec: typeof timeoutSec === "number" && timeoutSec > 0 ? timeoutSec : 10,
+      });
+      // A 401/403 on the retry is worth reporting over the original 404: it
+      // says the path exists and the credential is what failed.
+      if (retry.response.ok || retry.response.status === 401 || retry.response.status === 403) {
+        ({ response, text, truncated } = retry);
+      }
+    } catch {
+      // Keep the original 404/405 — the failure the caller can act on.
+    }
   }
   if (response.status === 401 || response.status === 403) {
-    throw new ModelSyncError("invalid-credentials", "OpenCode API key is missing, invalid, or expired");
+    throw new ModelSyncError(
+      "invalid-credentials",
+      "the endpoint rejected the credential (HTTP " + response.status + ")",
+    );
   }
   // Judge the status before trusting the body: a proxy's oversized error page
   // must still be reported as the HTTP failure it is.
   if (!response.ok) {
     throw new ModelSyncError(
       "api-error",
-      "OpenCode API error (HTTP " + response.status + "): " + (extractServerErrorMessage(text) ?? ""),
+      "model listing API error (HTTP " + response.status + "): " + (extractServerErrorMessage(text) ?? ""),
     );
   }
   if (truncated) {
@@ -1001,15 +1081,147 @@ export async function syncModelsOnce(ctx) {
   };
 }
 
+// ── per-route discovery inputs ──────────────────────────────────────────────
+
+/**
+ * The llm-pi-ai user-layer profile stored for one route. Empty when the
+ * namespace, the route, or the read is unavailable — a route the surface is
+ * still drafting has no stored profile yet, and that is not an error.
+ * @param {object} ctx - the model-capability context.
+ * @param {string | undefined} routeKey - the route the request names.
+ * @returns {Record<string, unknown>} the stored profile, or an empty object.
+ */
+function storedRouteProfile(ctx, routeKey) {
+  if (typeof routeKey !== "string" || routeKey === "") return {};
+  try {
+    const descriptor = ctx.settings?.describe?.()?.find((entry) => entry?.ns === LLM_PI_AI_NS);
+    const profile = descriptor?.user?.providers?.[routeKey];
+    return profile !== null && typeof profile === "object" && !Array.isArray(profile) ? profile : {};
+  } catch {
+    return {};
+  }
+}
+
+/** The deployment headers stored on a route, filtered to usable name/value pairs. */
+function storedRouteHeaders(profile) {
+  const headers = {};
+  const raw = profile?.headers;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return headers;
+  for (const [name, value] of Object.entries(raw)) {
+    if (name !== "" && typeof value === "string" && value !== "") headers[name] = value;
+  }
+  return headers;
+}
+
+/**
+ * Where one route's live listing lives, or `undefined` when nothing describes
+ * an endpoint.
+ *
+ * Precedence mirrors what the configuration surface shows: the draft in the
+ * request wins, then the route's own stored profile, then a per-route override
+ * from the plugin's config, then — for the plugin's primary route only — the
+ * legacy `modelsBaseURL`/`modelsRouteApi`. A catalog route whose profile names
+ * no endpoint therefore has nothing to probe; the caller keeps the host's
+ * catalog answer rather than guessing a URL.
+ * @param {object} ctx - the model-capability context.
+ * @param {string} routeKey - the llm-pi-ai route the request names.
+ * @param {{baseURL?: string, api?: string}} [request] - the surface's draft.
+ * @returns {{baseURL: string, api: string, headers: Record<string, string>} | undefined}
+ */
+function resolveRouteEndpoint(ctx, routeKey, request) {
+  const current = ctx.config();
+  const profile = storedRouteProfile(ctx, routeKey);
+  const isPrimary = routeKey === current.routeKey;
+  const override = current.routeBaseURLs?.[routeKey];
+  const overrideURL = typeof override === "string"
+    ? override
+    : typeof override?.baseURL === "string" ? override.baseURL.trim() : "";
+  const overrideApi = typeof override === "object" && override !== null && typeof override.api === "string"
+    ? override.api.trim()
+    : "";
+  const fromRequest = typeof request?.baseURL === "string" ? request.baseURL.trim() : "";
+  const fromProfile = typeof profile.baseURL === "string" ? profile.baseURL.trim() : "";
+  const baseURL = fromRequest !== ""
+    ? fromRequest
+    : fromProfile !== ""
+      ? fromProfile
+      : overrideURL !== ""
+        ? overrideURL
+        : isPrimary ? current.baseURL : "";
+  if (baseURL === "") return undefined;
+  const draftApi = typeof request?.api === "string" ? request.api.trim() : "";
+  const profileApi = typeof profile.api === "string" ? profile.api.trim() : "";
+  const api = draftApi !== ""
+    ? draftApi
+    : profileApi !== ""
+      ? profileApi
+      : overrideApi !== ""
+        ? overrideApi
+        : isPrimary ? current.routeApi : "openai-completions";
+  return { baseURL, api, headers: storedRouteHeaders(profile) };
+}
+
+/**
+ * Resolve one route's credential for the probe: the draft's own key first (the
+ * form may be replacing a stored one that fails), then the route's `apiKeyEnv`
+ * through the host credentials service and the launch environment — the same
+ * two-tier resolution llm-pi-ai performs for its own requests. The plugin's
+ * own modelsApiKey / modelsApiKeyEnvVar remain the primary route's fallback, so
+ * an existing opencode-go setup keeps working with no configuration change.
+ * @param {object} ctx - the model-capability context.
+ * @param {string} routeKey - the llm-pi-ai route the request names.
+ * @param {{apiKey?: string}} [request] - the surface's draft.
+ * @returns {Promise<string>} the credential, or "" when none resolves.
+ */
+async function resolveRouteApiKey(ctx, routeKey, request) {
+  const draft = typeof request?.apiKey === "string" ? request.apiKey.trim() : "";
+  if (draft !== "") return draft;
+  const profile = storedRouteProfile(ctx, routeKey);
+  const ref = typeof profile.apiKeyEnv === "string" ? profile.apiKeyEnv.trim() : "";
+  if (ref !== "") {
+    try {
+      const stored = await ctx.get?.("credentials")?.resolve?.(ref);
+      const value = typeof stored?.value === "string" ? stored.value.trim() : "";
+      if (value !== "") return value;
+    } catch {
+      // Fall through to the launch environment, exactly as llm-pi-ai does when
+      // the credentials seam is absent or the ref is unknown to it.
+    }
+    const fromEnv = process.env[ref];
+    if (typeof fromEnv === "string" && fromEnv.trim() !== "") return fromEnv.trim();
+  }
+  const current = ctx.config();
+  return routeKey === current.routeKey ? resolveApiKey(current) : "";
+}
+
+/**
+ * The models.dev directory one route's metadata comes from: the configured
+ * registryProvider for the plugin's primary route, the route key itself
+ * otherwise (models.dev keys its provider directories by provider id, which is
+ * what a route key is). A directory that does not exist contributes nothing —
+ * the scan is best-effort by design.
+ */
+function registryProviderFor(current, routeKey) {
+  return routeKey === current.routeKey ? current.registryProvider : routeKey;
+}
+
 // ── discovery enrichment ────────────────────────────────────────────────────
 
 /**
  * Wrap the llm runtime's registered llm-pi-ai discovery so the "fetch
  * available models" action returns the live endpoint listing merged over the
- * catalog answer. Best-effort by design: the registration is private state, so
- * absence disables the enrichment (with a warning) instead of breaking either
- * plugin; disposal restores the original function. Registers its own
- * ctx.effect, like the original server half.
+ * catalog answer.
+ *
+ * The wrap covers EVERY llm-pi-ai route the request names, not just the
+ * plugin's primary one: the host answers a catalog route from its installed
+ * catalog without touching the network, so a vendor's newer models would stay
+ * invisible for every other route. Per-route endpoint, credential and models.dev
+ * directory resolution lives in resolveRouteEndpoint / resolveRouteApiKey /
+ * registryProviderFor; a route with no resolvable endpoint or credential keeps
+ * the host's own answer. Best-effort by design: the registration is private
+ * state, so absence disables the enrichment (with a warning) instead of
+ * breaking either plugin; disposal restores the original function. Registers
+ * its own ctx.effect, like the original server half.
  */
 export function installDiscoveryEnrichment(ctx) {
   // Only stable values are destructured here. `llm` is read through ctx on
@@ -1043,21 +1255,33 @@ export function installDiscoveryEnrichment(ctx) {
     wrapped = async (request, signal) => {
       const base = await inner(request, signal);
       const current = config();
-      if (!current.enabled || request?.provider !== current.routeKey) return base;
+      // Only a request that NAMES a route hits the host's catalog shortcut (an
+      // installed catalog answers without any network call). A draft naming no
+      // route is probed live by the host itself, so enriching it here would
+      // only repeat that request.
+      const routeKey = typeof request?.provider === "string" && request.provider !== "" ? request.provider : undefined;
+      if (!current.enabled || routeKey === undefined) return base;
+      // A route nothing describes an endpoint for (a catalog route whose
+      // profile sets no baseURL) cannot be probed: the host's answer stands.
+      const endpoint = resolveRouteEndpoint(ctx, routeKey, request);
+      if (endpoint === undefined) return base;
+      let apiKey = "";
       try {
-        const draftKey = typeof request.apiKey === "string" ? request.apiKey.trim() : "";
-        const baseURL =
-          typeof request.baseURL === "string" && request.baseURL !== ""
-            ? request.baseURL
-            : current.baseURL;
+        apiKey = await resolveRouteApiKey(ctx, routeKey, request);
+      } catch {
+        apiKey = "";
+      }
+      // Without a credential and without deployment headers the probe could
+      // only earn a 401, so keep the catalog answer instead of reporting one.
+      if (apiKey === "" && Object.keys(endpoint.headers).length === 0) return base;
+      try {
         const live = await fetchLiveModelList(
-          baseURL,
-          draftKey !== "" ? draftKey : resolveApiKey(current),
+          endpoint.baseURL,
+          apiKey,
           signal,
           current.timeoutSec,
-          // The request carries the protocol the GUI is asking about; fall back
-          // to the route's configured one so the URL and auth shape match.
-          typeof request.api === "string" && request.api !== "" ? request.api : current.routeApi,
+          endpoint.api,
+          endpoint.headers,
         );
         const merged = mergeModelLists({ catalog: base, live });
         // Tag the answer as one that truly reflects the live endpoint. The
@@ -1076,7 +1300,7 @@ export function installDiscoveryEnrichment(ctx) {
             budgetTimer.unref?.();
           });
           try {
-            const meta = await Promise.race([fetchModelMetadata(live, current.registryProvider), budget]);
+            const meta = await Promise.race([fetchModelMetadata(live, registryProviderFor(current, routeKey)), budget]);
             if (meta !== null) applyMetadata(merged, meta);
           } finally {
             clearTimeout(budgetTimer);
@@ -1088,7 +1312,10 @@ export function installDiscoveryEnrichment(ctx) {
         fillFromSiblings(merged, base);
         return merged;
       } catch (error) {
-        logger?.warn?.("[toolkit] live model probe failed; answering from the catalog:", error?.message ?? error);
+        logger?.warn?.(
+          "[toolkit] live model probe for route '" + routeKey + "' failed; answering from the catalog:",
+          error?.message ?? error,
+        );
         return base;
       }
     };
@@ -1097,7 +1324,7 @@ export function installDiscoveryEnrichment(ctx) {
     // may stand in for the live listing (see the liveProbedAt tag above).
     wrapped.enrichedByToolkit = true;
     map.set(LLM_PI_AI_NS, wrapped);
-    logger?.info?.("[toolkit] discovery enrichment installed over llm-pi-ai; 'fetch available models' now returns the live listing");
+    logger?.info?.("[toolkit] discovery enrichment installed over llm-pi-ai; 'fetch available models' now returns the live listing for every route it can probe");
     return true;
   };
 
@@ -1211,6 +1438,10 @@ export function installModelCapability(hostCtx, configThunk) {
       get llm() {
         return sctx.llm;
       },
+      // The credentials service resolves a route's apiKeyEnv the same way
+      // llm-pi-ai does; absent on a headless host, where the environment is the
+      // whole credential plane.
+      get: (name) => sctx.get?.(name),
       effect: (fn, label) => sctx.effect(fn, label),
     };
 

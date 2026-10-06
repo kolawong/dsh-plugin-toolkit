@@ -221,7 +221,7 @@ window.__ModuleLoader__.load({
       optModelsTitle: "模型能力",
       optModelsShort: "同步模型清单、补全上下文与图像能力",
       optModelsDesc:
-        "把端点实时的模型清单与已安装目录合并后写入 dsh 的 llm-pi-ai 路由：新增模型立即出现在选择器中、无需重启。缺失的上下文/输出上限由 models.dev 注册表与同族模型补全；图像输入按其他已注册 provider 的同 id 声明借用；也可在此强制某个模型支持或不支持图像。",
+        "把每条 llm-pi-ai 路由端点实时的模型清单与已安装目录合并：新增模型立即出现在选择器中、无需重启。缺失的上下文/输出上限由 models.dev 注册表与同族模型补全；图像输入按其他已注册 provider 的同 id 声明借用；也可在此强制某个模型支持或不支持图像。",
       modelsKeyLabel: "OpenCode API Key",
       modelsKeyPlaceholder: "粘贴 opencode.ai 的 API Key",
       modelsKeyHint: "留空时回退读取环境变量 {env}",
@@ -348,7 +348,7 @@ window.__ModuleLoader__.load({
       optModelsTitle: "Model capability",
       optModelsShort: "Sync the model list, capacities and image support",
       optModelsDesc:
-        "Merge the endpoint's live model listing over the installed catalog and write it into the dsh llm-pi-ai route: new models become selectable immediately, with no restart. Missing context/output limits are filled from the models.dev registry and from sized siblings; image input is borrowed from any other registered provider that declares the same id multimodal, and a model can be forced vision-capable or text-only here.",
+        "Merge every llm-pi-ai route's live endpoint listing over the installed catalog: new models become selectable immediately, with no restart. Missing context/output limits are filled from the models.dev registry and from sized siblings; image input is borrowed from any other registered provider that declares the same id multimodal, and a model can be forced vision-capable or text-only here.",
       modelsKeyLabel: "OpenCode API key",
       modelsKeyPlaceholder: "Paste your opencode.ai API key",
       modelsKeyHint: "Empty falls back to the {env} environment variable",

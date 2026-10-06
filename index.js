@@ -119,6 +119,18 @@ export const Config = z.object({
   modelsSyncPath: z.string().default("/api/toolkit/sync-models"),
   /** Same-origin route listing the route's known models for the picker (GET). */
   modelsPath: z.string().default("/api/toolkit/models"),
+  /**
+   * Per-route endpoint overrides for the discovery enrichment, keyed by
+   * llm-pi-ai route key: the endpoint string, or `{ baseURL, api }` when the
+   * route's protocol is not stated in its profile. Only the primary route has a
+   * configured baseURL of its own, so a catalog route (minimax-cn, kimi-coding,
+   * …) whose profile names no endpoint can only be probed when one is supplied
+   * here.
+   */
+  modelsRouteBaseURLs: z.dict(z.union([
+    z.string(),
+    z.object({ baseURL: z.string(), api: z.string() }),
+  ])).default({}),
   /** Fill missing capacities/modalities for new models from the models.dev registry. */
   modelsEnrichFromRegistry: z.boolean().default(true),
   /** This endpoint's provider directory inside the models.dev registry. */

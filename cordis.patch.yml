@@ -30,6 +30,14 @@
         modelsRouteApi: openai-completions
         modelsSyncPath: /api/toolkit/sync-models
         modelsPath: /api/toolkit/models
+        # Per-route endpoint overrides for routes that configure no baseURL of
+        # their own (a pi-ai catalog route such as minimax-cn or kimi-coding).
+        # The discovery enrichment probes every llm-pi-ai route it can resolve
+        # an endpoint and credential for; this map is how a catalog route gets
+        # one. Either the endpoint string, or { baseURL, api } when the route's
+        # protocol is not stated in its profile. The primary route below needs
+        # no entry.
+        modelsRouteBaseURLs: {}
         modelsEnrichFromRegistry: true
         modelsRegistryProvider: opencode-go
         modelsVision: []

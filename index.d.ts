@@ -29,10 +29,11 @@ export interface ToolkitConfig {
      */
     opencodeSession: boolean;
     /**
-     * Keep one llm-pi-ai route's model list current: wrap the runtime's model
-     * discovery, mount the POST sync route, merge the live listing with the
-     * stored catalog, enrich capacities from models.dev, and apply the forced
-     * vision / text-only overrides (default true).
+     * Keep llm-pi-ai routes' model lists current: wrap the runtime's model
+     * discovery so "fetch available models" merges each route's live endpoint
+     * listing over its catalog answer, mount the POST sync route, enrich
+     * capacities from models.dev, and apply the forced vision / text-only
+     * overrides to the primary route (default true).
      */
     modelCapability: boolean;
   };
@@ -57,6 +58,14 @@ export interface ToolkitConfig {
   modelsSyncPath: string;
   /** Same-origin route listing the route's known models for the picker (GET). */
   modelsPath: string;
+  /**
+   * Per-route endpoint overrides for the discovery enrichment, keyed by
+   * llm-pi-ai route key (default {}): either the endpoint string, or
+   * `{ baseURL, api }` when the route's protocol is not stated in its profile.
+   * Consulted after the route's own stored baseURL, so a catalog route with no
+   * configured endpoint can still be probed.
+   */
+  modelsRouteBaseURLs: Record<string, string | { baseURL: string; api?: string }>;
   /** Fill missing capacities/modalities from the models.dev registry (default true). */
   modelsEnrichFromRegistry: boolean;
   /** Provider directory inside the models.dev registry (default opencode-go). */
