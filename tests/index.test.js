@@ -14,7 +14,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import * as toolkit from "../index.js";
-import { settingsNamespace } from "@deepseek-ai/dsh-settings";
+// The plugin owns this helper now (it imports nothing from @deepseek-ai/dsh-settings),
+// so the test takes it from the same place the runtime does.
+import { settingsNamespace } from "../index.js";
 
 const realFetch = globalThis.fetch;
 
@@ -34,9 +36,9 @@ function makeCtx() {
       const dispose = fn?.();
       return typeof dispose === "function" ? dispose : () => {};
     },
-    // `installSettingsSection` and `installModelCapability` both hand their real
-    // work to ctx.inject; resolving nothing keeps the host seams absent, which
-    // is exactly the "dormant, not broken" path worth testing.
+    // The settings registration and `installModelCapability` both hand their
+    // real work to ctx.inject; resolving nothing keeps the host seams absent,
+    // which is exactly the "dormant, not broken" path worth testing.
     inject() {},
   };
 }

@@ -76,8 +76,7 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=4.0.0",
-    "@deepseek-ai/schemastery": ">=3.0.0",
-    "@deepseek-ai/dsh-settings": "*"
+    "@deepseek-ai/schemastery": ">=3.0.0"
   },
   "icon": "./icon.svg"
 }

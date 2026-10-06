@@ -66,6 +66,12 @@ export interface ToolkitConfig {
    * configured endpoint can still be probed.
    */
   modelsRouteBaseURLs: Record<string, string | { baseURL: string; api?: string }>;
+  /**
+   * Per-route model ids the endpoint serves without listing them (default {}),
+   * e.g. `{ 'minimax-cn': ['MiniMax-M3.1-Flash-Preview'] }`. Appended to that
+   * route's discovery answer whether or not the live probe ran.
+   */
+  modelsRouteExtraModels: Record<string, string[]>;
   /** Fill missing capacities/modalities from the models.dev registry (default true). */
   modelsEnrichFromRegistry: boolean;
   /** Provider directory inside the models.dev registry (default opencode-go). */

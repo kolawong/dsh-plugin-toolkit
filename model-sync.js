@@ -36,6 +36,8 @@ import {
   applyVisionOverride,
 } from "./models-core.js";
 
+import { writeSync } from "node:fs";
+
 /** Settings namespace owned by the llm-pi-ai adapter plugin. */
 export const LLM_PI_AI_NS = "llm-pi-ai";
 
@@ -84,6 +86,33 @@ function routeBaseURLOverrides(raw) {
  * @param {Record<string, unknown>} config - merged toolkit configuration.
  * @returns {object} the model-capability configuration.
  */
+/**
+ * Per-route model ids to add to the discovery answer, keyed by llm-pi-ai route
+ * key. Some endpoints serve models they never advertise: MiniMax's
+ * `/anthropic/v1/models` lists eight ids and omits `MiniMax-M3.1-Flash-Preview`
+ * even though the same credential answers 200 for it (preview ids stay off the
+ * public listing). The plugin can only report what the endpoint says, so a
+ * model the endpoint hides has to be declared here; the listing stays the
+ * source of truth for everything else.
+ * @param {unknown} raw - the configured `modelsRouteExtraModels` value.
+ * @returns {Record<string, string[]>} normalized route key -> unique id list.
+ */
+function routeExtraModels(raw) {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (key === "" || !Array.isArray(value)) continue;
+    const ids = [];
+    for (const entry of value) {
+      if (typeof entry !== "string") continue;
+      const id = entry.trim();
+      if (id !== "" && !ids.includes(id)) ids.push(id);
+    }
+    if (ids.length > 0) out[key] = ids;
+  }
+  return out;
+}
+
 export function modelConfig(config) {
   const src = config ?? {};
   const timeout = src.modelsTimeoutSec;
@@ -122,6 +151,12 @@ export function modelConfig(config) {
      * profile names no endpoint can only be probed when one is supplied here.
      */
     routeBaseURLs: routeBaseURLOverrides(src.modelsRouteBaseURLs),
+    /**
+     * Per-route model ids the endpoint serves without listing them. Merged into
+     * every answer for that route, whether or not the live probe ran, so a
+     * hidden preview model is still offered by "fetch available models".
+     */
+    routeExtraModels: routeExtraModels(src.modelsRouteExtraModels),
     /** Fill missing capacities/modalities for new models from the models.dev registry. */
     enrichFromRegistry: src.modelsEnrichFromRegistry !== false,
     /** This endpoint's provider directory inside the models.dev registry. */
@@ -1084,19 +1119,53 @@ export async function syncModelsOnce(ctx) {
 // ── per-route discovery inputs ──────────────────────────────────────────────
 
 /**
- * The llm-pi-ai user-layer profile stored for one route. Empty when the
- * namespace, the route, or the read is unavailable — a route the surface is
- * still drafting has no stored profile yet, and that is not an error.
+ * The llm-pi-ai profile describing one route. Empty when the namespace, the
+ * route, or the read is unavailable — a route the surface is still drafting has
+ * no stored profile yet, and that is not an error.
+ *
+ * The layers are tried in the order that matters: `value` is the section the
+ * host itself routes with (composition ⊕ user layer), so a route declared in
+ * the profile's `providers:` map is found there. `user` alone carries only what
+ * the settings surface wrote, and `base` only the composition entry, so a route
+ * declared in `cordis.patch.yml` would look absent if `user` were read alone.
  * @param {object} ctx - the model-capability context.
  * @param {string | undefined} routeKey - the route the request names.
  * @returns {Record<string, unknown>} the stored profile, or an empty object.
  */
+/**
+ * Diagnostic trace for the discovery wrap, enabled with `DSH_TOOLKIT_DEBUG=1`.
+ *
+ * The wrap is silent on purpose: a route it cannot probe (no endpoint, no
+ * credential) is a normal outcome, not an error, so nothing is logged and the
+ * host's catalog answer stands. That silence makes a *misconfigured* route
+ * indistinguishable from a *correctly skipped* one, which is exactly the
+ * question "why does this route not fetch models?" turns on. This prints the
+ * branch taken, to stderr, and never a credential value (lengths only).
+ * @param {string} event - which branch was reached.
+ * @param {Record<string, unknown>} [detail] - non-secret facts about it.
+ */
+function probeDebug(event, detail) {
+  if (process.env.DSH_TOOLKIT_DEBUG !== "1") return;
+  const extra = detail === undefined ? "" : " " + JSON.stringify(detail);
+  const line = `[toolkit-debug] ${event}${extra}\n`;
+  // Written straight to fd 2: the CLI replaces the process streams with its own
+  // log sink, so a patched `process.stderr.write` can vanish without a trace.
+  try {
+    writeSync(2, line);
+  } catch {
+    // A closed or redirected stderr must never break a discovery call.
+  }
+}
+
 function storedRouteProfile(ctx, routeKey) {
   if (typeof routeKey !== "string" || routeKey === "") return {};
   try {
     const descriptor = ctx.settings?.describe?.()?.find((entry) => entry?.ns === LLM_PI_AI_NS);
-    const profile = descriptor?.user?.providers?.[routeKey];
-    return profile !== null && typeof profile === "object" && !Array.isArray(profile) ? profile : {};
+    for (const layer of [descriptor?.value, descriptor?.user, descriptor?.base]) {
+      const profile = layer?.providers?.[routeKey];
+      if (profile !== null && typeof profile === "object" && !Array.isArray(profile)) return profile;
+    }
+    return {};
   } catch {
     return {};
   }
@@ -1253,7 +1322,66 @@ export function installDiscoveryEnrichment(ctx) {
     // first argument silently discarded the caller's cancellation, both for
     // the catalog answer and for our own probe.
     wrapped = async (request, signal) => {
-      const base = await inner(request, signal);
+      probeDebug("enter", {
+        provider: request?.provider ?? null,
+        baseURL: request?.baseURL ?? null,
+        api: request?.api ?? null,
+        hasApiKey: typeof request?.apiKey === "string" && request.apiKey !== "",
+        // Who the host would call for this namespace right now: if this is not
+        // `wrapped`, something re-registered a discovery after this install and
+        // our answer never reaches the caller.
+        mapEntry: (() => {
+          const current = map.get(LLM_PI_AI_NS);
+          return {
+            isWrapped: current === wrapped,
+            name: typeof current?.name === "string" ? current.name : null,
+            enriched: current?.enrichedByToolkit === true,
+            source: typeof current === "function" ? String(current).slice(0, 160) : null,
+          };
+        })(),
+      });
+      // The endpoint has to be resolved BEFORE the host's own discovery runs.
+      // A provider pi-ai ships no catalog for (clinepass, any gateway the
+      // adapter does not know) makes the host throw DISCOVERY_FAILED the moment
+      // the request names no baseURL — and the GUI's request names only the
+      // route. Calling `inner` first therefore surfaced that error before this
+      // wrap could supply the endpoint it was missing, so the route answered
+      // with whatever the editor had saved instead of a live listing.
+      const earlyConfig = config();
+      const earlyRoute = typeof request?.provider === "string" && request.provider !== "" ? request.provider : undefined;
+      const earlyEndpoint = earlyConfig.enabled && earlyRoute !== undefined
+        ? resolveRouteEndpoint(ctx, earlyRoute, request)
+        : undefined;
+      let base;
+      // True when the host only managed an answer because we handed it the
+      // endpoint it was missing: its reply is then the endpoint's own listing.
+      let hostProbed = false;
+      try {
+        base = await inner(request, signal);
+      } catch (error) {
+        if (earlyEndpoint === undefined) {
+          probeDebug("inner threw", { provider: request?.provider ?? null, error: String(error?.message ?? error) });
+          throw error;
+        }
+        probeDebug("inner threw; retrying with the resolved endpoint", {
+          provider: request?.provider ?? null,
+          error: String(error?.message ?? error),
+          baseURL: earlyEndpoint.baseURL,
+        });
+        try {
+          base = await inner(
+            { ...request, baseURL: earlyEndpoint.baseURL, api: request?.api ?? earlyEndpoint.api },
+            signal,
+          );
+          hostProbed = true;
+        } catch (retryError) {
+          // No catalog and no usable host probe: our own probe below is the only
+          // remaining source, and an empty catalog is the honest starting point.
+          probeDebug("endpoint retry threw", { error: String(retryError?.message ?? retryError) });
+          base = [];
+        }
+      }
+      probeDebug("inner answered", { provider: request?.provider ?? null, size: Array.isArray(base) ? base.length : null, hostProbed });
       const current = config();
       // Only a request that NAMES a route hits the host's catalog shortcut (an
       // installed catalog answers without any network call). A draft naming no
@@ -1261,10 +1389,38 @@ export function installDiscoveryEnrichment(ctx) {
       // only repeat that request.
       const routeKey = typeof request?.provider === "string" && request.provider !== "" ? request.provider : undefined;
       if (!current.enabled || routeKey === undefined) return base;
+      // Declared-but-unlisted ids join every answer for this route, including
+      // the ones that skip the probe below: the whole point of declaring them is
+      // that the endpoint never mentions them. They go after the listing — the
+      // endpoint's own order stays authoritative — and never duplicate an id the
+      // listing already carries (that copy keeps its richer metadata).
+      const declared = current.routeExtraModels[routeKey] ?? [];
+      const withDeclared = (list) => {
+        const rows = Array.isArray(list) ? list : [];
+        if (declared.length === 0) return rows;
+        const known = new Set(rows.map((model) => model?.id));
+        const missing = declared.filter((id) => !known.has(id));
+        if (missing.length === 0) return rows;
+        return [...rows, ...missing.map((id) => ({ id, name: id }))];
+      };
+      // The host already asked the endpoint (it could not have answered this
+      // provider from a catalog — it threw without one). Asking again would
+      // double the network cost for nothing, and the reply is a real listing, so
+      // it earns the same live-probed tag a probe of ours would.
+      if (hostProbed) {
+        const answered = withDeclared(base);
+        answered.liveProbedAt = Date.now();
+        probeDebug("host probe reused", { routeKey, count: answered.length });
+        return answered;
+      }
       // A route nothing describes an endpoint for (a catalog route whose
       // profile sets no baseURL) cannot be probed: the host's answer stands.
       const endpoint = resolveRouteEndpoint(ctx, routeKey, request);
-      if (endpoint === undefined) return base;
+      if (endpoint === undefined) {
+        probeDebug("skip: no endpoint", { routeKey, catalogSize: Array.isArray(base) ? base.length : null });
+        return withDeclared(base);
+      }
+      probeDebug("endpoint resolved", { routeKey, baseURL: endpoint.baseURL, api: endpoint.api, headers: Object.keys(endpoint.headers) });
       let apiKey = "";
       try {
         apiKey = await resolveRouteApiKey(ctx, routeKey, request);
@@ -1273,7 +1429,11 @@ export function installDiscoveryEnrichment(ctx) {
       }
       // Without a credential and without deployment headers the probe could
       // only earn a 401, so keep the catalog answer instead of reporting one.
-      if (apiKey === "" && Object.keys(endpoint.headers).length === 0) return base;
+      if (apiKey === "" && Object.keys(endpoint.headers).length === 0) {
+        probeDebug("skip: no credential", { routeKey, catalogSize: Array.isArray(base) ? base.length : null });
+        return withDeclared(base);
+      }
+      probeDebug("probing", { routeKey, keyLength: apiKey.length, hasDraftKey: typeof request?.apiKey === "string" && request.apiKey !== "" });
       try {
         const live = await fetchLiveModelList(
           endpoint.baseURL,
@@ -1283,7 +1443,12 @@ export function installDiscoveryEnrichment(ctx) {
           endpoint.api,
           endpoint.headers,
         );
-        const merged = mergeModelLists({ catalog: base, live });
+        probeDebug("probe answered", { routeKey, liveCount: Array.isArray(live) ? live.length : null });
+        let merged = mergeModelLists({ catalog: base, live });
+        // Declared ids ride along with the live listing too, so a hidden model
+        // is offered whether or not the probe ran. The answer stays tagged as
+        // live-probed below: these ids are known-serviceable, just unlisted.
+        merged = withDeclared(merged);
         // Tag the answer as one that truly reflects the live endpoint. The
         // model-sync route consults this marker: a fallback answer (the catch
         // below returns the bare catalog) must not be mistaken for a live
@@ -1312,6 +1477,7 @@ export function installDiscoveryEnrichment(ctx) {
         fillFromSiblings(merged, base);
         return merged;
       } catch (error) {
+        probeDebug("probe failed", { routeKey, error: String(error?.message ?? error) });
         logger?.warn?.(
           "[toolkit] live model probe for route '" + routeKey + "' failed; answering from the catalog:",
           error?.message ?? error,
@@ -1395,7 +1561,7 @@ export function resetModelSyncCaches() {
 }
 
 /**
- * Re-run the saved-model modality healing. `installSettingsSection`'s onChange
+ * Re-run the saved-model modality healing. The settings wiring's onChange
  * calls this so editing the forced vision / text-only lists applies to the
  * already-stored route models without waiting for a restart or a sync.
  */

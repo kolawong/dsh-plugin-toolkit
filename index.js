@@ -57,7 +57,6 @@ import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import z from "@deepseek-ai/schemastery";
-import { installSettingsSection, settingsNamespace } from "@deepseek-ai/dsh-settings";
 import { installModelCapability, rehealModelCapability } from "./model-sync.js";
 import { installSlashI18nApi } from "./slash-i18n-api.js";
 
@@ -73,6 +72,29 @@ export const inject = ["settings"];
 
 /** Settings namespace name; the Web plugins page pairs the card by this key. */
 export const NS = "toolkit";
+
+/** Lowercase kebab-case, the only shape a settings namespace accepts. */
+const NAMESPACE_PATTERN = /^[a-z][a-z0-9-]*$/;
+
+/**
+ * Brand a plugin short name as a settings namespace.
+ *
+ * This used to come from `@deepseek-ai/dsh-settings`, but that package is a
+ * moving internal: the checkout the harness runs from no longer exports the
+ * helper (nor `installSettingsSection`), and a named import of a missing
+ * export is a link-time `SyntaxError` — it takes the WHOLE plugin down before
+ * `apply` runs, so the settings card, the sync route and the model-discovery
+ * wrap all vanish silently. The brand is a validation and nothing more, so it
+ * is inlined here and the plugin keeps zero imports from that package.
+ * @param {string} value - candidate namespace.
+ * @returns {string} the same value, validated.
+ */
+export function settingsNamespace(value) {
+  if (typeof value !== "string" || !NAMESPACE_PATTERN.test(value)) {
+    throw new TypeError(`settings namespace "${String(value)}" must match ${String(NAMESPACE_PATTERN)}`);
+  }
+  return value;
+}
 
 /**
  * Plugin configuration schema. Exported so Cordis validates the bundle-patch /
@@ -131,6 +153,15 @@ export const Config = z.object({
     z.string(),
     z.object({ baseURL: z.string(), api: z.string() }),
   ])).default({}),
+  /**
+   * Per-route model ids the endpoint serves without ever listing them, e.g.
+   * MiniMax's `MiniMax-M3.1-Flash-Preview` (the same credential answers 200
+   * while `/anthropic/v1/models` omits it). Declared ids are appended to that
+   * route's discovery answer whether or not the live probe ran, so the picker
+   * offers a hidden model instead of the endpoint's listing being the only
+   * source of truth.
+   */
+  modelsRouteExtraModels: z.dict(z.array(z.string())).default({}),
   /** Fill missing capacities/modalities for new models from the models.dev registry. */
   modelsEnrichFromRegistry: z.boolean().default(true),
   /** This endpoint's provider directory inside the models.dev registry. */
@@ -151,8 +182,8 @@ let pluginConfig = {};
 
 /**
  * The active configuration source: the resolved settings scope while a
- * settings provider is mounted, the composition entry otherwise. Swapped by
- * `installSettingsSection`'s `setSource` at attach/detach.
+ * settings provider is mounted, the composition entry otherwise. Swapped
+ * between the two by the settings wiring in `apply` at attach/detach.
  */
 let source = () => pluginConfig;
 
@@ -312,11 +343,17 @@ function installOpenCodeSession(ctx) {
 }
 
 /**
- * Plugin activation: register the `toolkit` settings namespace via
- * `installSettingsSection` (the canonical optional-settings wiring — the Web
- * settings card reads/writes the section live, and the composition entry
- * keeps the plugin working when no settings provider is mounted), and ensure
- * the chat workspace directory exists for the workspacelessChat optimization.
+ * Plugin activation: register the `toolkit` settings namespace with the host
+ * settings service (the Web settings card reads/writes the section live, and
+ * the composition entry keeps the plugin working when no settings provider is
+ * mounted), and ensure the chat workspace directory exists for the
+ * workspacelessChat optimization.
+ *
+ * The registration is done against the runtime service directly rather than
+ * through a helper imported from `@deepseek-ai/dsh-settings`: that package's
+ * export list is not stable across harness builds, and a named import of a
+ * missing export is a link-time SyntaxError that kills the whole plugin before
+ * `apply` ever runs. The service call itself is the documented consumer path.
  *
  * The `base` entry carries the RESOLVED absolute chat path (never the raw
  * empty default) so the client optimization reads a usable host path live.

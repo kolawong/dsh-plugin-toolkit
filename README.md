@@ -205,7 +205,7 @@ Keeps every llm-pi-ai route's model list current against its endpoint's live lis
 
 How it works, and its bounds:
 
-- **Discovery wrap**: wraps the runtime's llm-pi-ai model discovery so the GUI's "fetch available models" answers with the live listing merged over the installed catalog instead of the catalog alone. The wrap covers **every llm-pi-ai route the request names**, not just `modelsRouteKey`: the host answers a catalog route from its installed catalog without any network call, so a vendor's newer models would otherwise stay invisible on every other route. Each route resolves its own endpoint (request draft → the route's stored `baseURL` → a `modelsRouteBaseURLs` override; the primary route additionally falls back to `modelsBaseURL`), credential (draft key → the route's `apiKeyEnv` through the credentials service, then the environment; the primary route additionally falls back to `modelsApiKey`) and models.dev directory (the primary route uses `modelsRegistryProvider`, every other route its own key). **A route with no resolvable endpoint, or with neither a credential nor deployment headers, keeps the host's answer** — the wrap never guesses a URL or probes into a guaranteed 401. The wrap is tagged `enrichedByToolkit`: only an answer whose probe really succeeded counts as a live listing for the sync route, so a transient probe failure falls back to the catalog and can never shrink the stored route. There is **no "sync model list" button on the card**: adopting new models happens in dsh's own model settings (click "fetch available models"; the list is yours to confirm before it is written), so nothing dumps the whole live listing into the route by accident. The server route that does it — `POST /api/toolkit/sync-models` — stays registered and only runs when explicitly called (API/scripts); it still targets `modelsRouteKey` alone.
+- **Discovery wrap**: wraps the runtime's llm-pi-ai model discovery so the GUI's "fetch available models" answers with the live listing merged over the installed catalog instead of the catalog alone. The wrap covers **every llm-pi-ai route the request names**, not just `modelsRouteKey`: the host answers a catalog route from its installed catalog without any network call, so a vendor's newer models would otherwise stay invisible on every other route. Each route resolves its own endpoint (request draft → the route's stored `baseURL` → a `modelsRouteBaseURLs` override; the primary route additionally falls back to `modelsBaseURL`), credential (draft key → the route's `apiKeyEnv` through the credentials service, then the environment; the primary route additionally falls back to `modelsApiKey`) and models.dev directory (the primary route uses `modelsRegistryProvider`, every other route its own key). **A route with no resolvable endpoint, or with neither a credential nor deployment headers, keeps the host's answer** — the wrap never guesses a URL or probes into a guaranteed 401. **The endpoint must be resolved before the host's own discovery runs**: a provider pi-ai ships no catalog for (`clinepass` and any gateway the adapter does not know) makes the host throw `DISCOVERY_FAILED` when the request names no `baseURL` — and the GUI's request names only the route. Because the wrap used to call the host first, that error escaped before the endpoint could be supplied and the route answered with whatever the editor had saved. The wrap now resolves the endpoint first and, on that refusal, **retries the host with the resolved endpoint** (the host's reply is the endpoint's own listing, so it is reused and tagged live rather than probed a second time); only when no endpoint resolves at all does the host's error propagate unchanged. Diagnose a route that will not fetch with `DSH_TOOLKIT_DEBUG=1`: the wrap prints the branch it took (no endpoint / no credential / probe result / host refusal / host listing reused) to stderr, with credential lengths but never credential values. The wrap is tagged `enrichedByToolkit`: only an answer whose probe really succeeded counts as a live listing for the sync route, so a transient probe failure falls back to the catalog and can never shrink the stored route. There is **no "sync model list" button on the card**: adopting new models happens in dsh's own model settings (click "fetch available models"; the list is yours to confirm before it is written), so nothing dumps the whole live listing into the route by accident. The server route that does it — `POST /api/toolkit/sync-models` — stays registered and only runs when explicitly called (API/scripts); it still targets `modelsRouteKey` alone.
 - **Searchable model pickers**: the forced vision / text-only fields are no longer comma-separated id boxes. Each is a type-to-filter picker over the route's known models — click a candidate to add it as a chip, click the chip's × to drop it, press Enter to add an id the list does not know, Backspace to delete the last chip. Candidates come from `GET /api/toolkit/models` (`modelsRouteKey`'s stored rows ∪ the runtime's `listModels`, deduped and sorted, in-process reads only — no network) and are fetched once per dialog open: it only reads the configured models and changes nothing. The two lists are mutually exclusive: adding to one removes the id from the other. **The pickers and both forced lists stay scoped to `modelsRouteKey`**, unlike the multi-route discovery wrap.
 - **Startup healing**: pre-writes the route's wire protocol (`api`) so the configuration surface's own save passes serviceability too, and heals image input on already-saved models (that save path sends no `input` field). Edits to the forced vision / text-only lists apply to the stored models at once — no restart, no re-sync.
 - **One-way migration**: on first start with an empty `modelsApiKey`, the former `quota-badges` namespace donates its OpenCode key, forced vision / text-only lists, and route shape; the migration marker lands in the same write, so clearing the key afterwards is never re-filled.
@@ -222,6 +222,7 @@ How it works, and its bounds:
 | `modelsSyncPath` | `/api/toolkit/sync-models` | Same-origin explicit-sync route (no card entry point; API/scripts only; changing it needs a restart; syncs the primary route only). |
 | `modelsPath` | `/api/toolkit/models` | Same-origin route listing the picker's candidates. The server registers the path once (a change needs a restart) while the card re-reads it live, so until that restart an edit makes the card target a route the server does not serve yet. |
 | `modelsRouteBaseURLs` | `{}` | Per-route endpoint override, giving a catalog route whose profile names no `baseURL` (e.g. `minimax-cn`, `kimi-coding`) an endpoint to probe: either the endpoint string, or `{ baseURL, api }` when the route's protocol is not stated in its profile (e.g. `api: anthropic-messages` for an Anthropic-compatible vendor). Lower precedence than the route's stored `baseURL`. |
+| `modelsRouteExtraModels` | `{}` | Per-route model ids the endpoint serves **without ever listing them**, e.g. `{ minimax-cn: [MiniMax-M3.1-Flash-Preview] }`. MiniMax answers 200 for that id on the same credential while `/anthropic/v1/models` lists only the eight non-preview ids, so no probe can surface it. Declared ids are appended to that route's discovery answer (after the endpoint's own listing, never duplicating an id already present) whether or not the live probe ran. |
 | `modelsEnrichFromRegistry` | `true` | Fill missing capacities/modalities from the models.dev registry. |
 | `modelsRegistryProvider` | `opencode-go` | Provider directory inside the models.dev registry. |
 | `modelsVision` | `[]` | Model ids forced to accept image input. |
@@ -254,6 +255,7 @@ All fields live in the `toolkit` settings namespace. The composition defaults ar
 | `modelsSyncPath` | string | `/api/toolkit/sync-models` | modelCapability |
 | `modelsPath` | string | `/api/toolkit/models` | modelCapability |
 | `modelsRouteBaseURLs` | Record<string, string \| {baseURL,api?}> | `{}` | modelCapability |
+| `modelsRouteExtraModels` | Record<string, string[]> | `{}` | modelCapability |
 | `modelsEnrichFromRegistry` | boolean | `true` | modelCapability |
 | `modelsRegistryProvider` | string | `opencode-go` | modelCapability |
 | `modelsVision` | string[] | `[]` | modelCapability |
@@ -269,14 +271,24 @@ npm run smoke:client  # offline smoke for the client bundle (no host required)
 ```
 
 `npm test` and `npm run smoke:client` are self-contained. `npm run smoke` imports
-`index.js`, which imports the `@deepseek-ai/schemastery` and
-`@deepseek-ai/dsh-settings` peers; those are **not** dependencies of this
-package, so run it from a checkout where they resolve (a dsh workspace, or a
-profile with this package installed) rather than from a bare `npm install`:
+`index.js`, which imports the `@deepseek-ai/schemastery` peer; that is **not** a
+dependency of this package, so run it from a checkout where it resolves (a dsh
+workspace, or a profile with this package installed) rather than from a bare
+`npm install`:
 
 ```sh
 cd /root/deepseek-harness && node /root/dsh-plugin-toolkit/scripts/smoke.mjs
 ```
+
+> **Why `@deepseek-ai/dsh-settings` is no longer imported:** that package's export
+> list moves with the host build. Older builds exported `installSettingsSection` /
+> `settingsNamespace`; the current checkout exports only
+> `{ SettingsConflictError, SettingsForms, redactSecrets }`. A named import of a
+> missing export is a **link-time `SyntaxError`** — it takes the whole plugin down
+> before `apply` runs (no fiber at all), which shows up as the settings card, the
+> sync route and the model-discovery wrap all silently disappearing. The plugin now
+> calls the runtime service (`sctx.settings.register(...)`) directly and carries its
+> own `settingsNamespace()` validator, so it imports nothing from that package.
 
 | Path | Contents |
 |---|---|

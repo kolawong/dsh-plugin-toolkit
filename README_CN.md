@@ -205,7 +205,7 @@ OpenCode Go 现在会 400 拒绝缺少 `x-opencode-session` 的请求（`{"type"
 
 工作方式与边界：
 
-- **发现包装**：包装运行时的 llm-pi-ai 模型发现，让 GUI 的「获取可用模型」返回「实时清单 ⊕ 已安装目录」的并集，而不是只有目录。**包装覆盖请求点名的每一条 llm-pi-ai 路由**，不只 `modelsRouteKey`：宿主对 pi-ai 目录内的路由只回答内置目录、根本不发网络请求，所以厂商新模型在其它路由上本来永远看不到。每条路由各自解析端点（请求草稿 → 该路由 stored profile 的 `baseURL` → `modelsRouteBaseURLs` 覆盖；主路由再兜底 `modelsBaseURL`）、凭据（草稿 key → 该路由 `apiKeyEnv` 经 credentials 服务、再退回环境变量；主路由再兜底 `modelsApiKey`）与 models.dev 目录（主路由用 `modelsRegistryProvider`，其它路由用路由键本身）。**没有可解析端点、或既无凭据也无部署 headers 的路由原样返回宿主答案**，不会去猜 URL 或必然吃 401。包装带 `enrichedByToolkit` 标记：只有真正 probe 成功的答案才会被同步路由当作实时清单，探测失败回退目录，绝不会把已存路由写瘦。**卡片上没有「同步模型列表」按钮**：模型清单的更新走 dsh 自己的模型设置（点「获取可用模型」，清单由你确认后写入），避免一键把实时清单整体灌进路由；同一个动作的服务端路由 `POST /api/toolkit/sync-models` 仍然注册，只在被显式调用时生效（API/脚本用），且只作用于 `modelsRouteKey`。
+- **发现包装**：包装运行时的 llm-pi-ai 模型发现，让 GUI 的「获取可用模型」返回「实时清单 ⊕ 已安装目录」的并集，而不是只有目录。**包装覆盖请求点名的每一条 llm-pi-ai 路由**，不只 `modelsRouteKey`：宿主对 pi-ai 目录内的路由只回答内置目录、根本不发网络请求，所以厂商新模型在其它路由上本来永远看不到。每条路由各自解析端点（请求草稿 → 该路由 stored profile 的 `baseURL` → `modelsRouteBaseURLs` 覆盖；主路由再兜底 `modelsBaseURL`）、凭据（草稿 key → 该路由 `apiKeyEnv` 经 credentials 服务、再退回环境变量；主路由再兜底 `modelsApiKey`）与 models.dev 目录（主路由用 `modelsRegistryProvider`，其它路由用路由键本身）。**没有可解析端点、或既无凭据也无部署 headers 的路由原样返回宿主答案**，不会去猜 URL 或必然吃 401。**端点必须在调用宿主自己的 discovery 之前解析好**：pi-ai 不认识的提供商（如 `clinepass` 这类网关）在请求没带 `baseURL` 时会让宿主直接抛 `DISCOVERY_FAILED`（GUI 的请求只带路由名），而包装原先先调宿主再探测——异常会在补上端点之前冒出去，该路由只能回落到编辑器里已存的列表。现在包装先解析端点，遇到宿主这种拒绝就用解析到的端点**重试宿主**（宿主的答案本身就是实时清单，直接复用并打上 live 标记，不再重复探测）；连端点都解析不到时才把宿主的错误原样抛出。排查「某条路由拉不到模型」时用 `DSH_TOOLKIT_DEBUG=1` 启动：包装会把实际走的分支（无端点 / 无凭据 / 探测结果 / 宿主拒绝 / 宿主清单被复用）写到 stderr，只打凭据长度、不打凭据值。包装带 `enrichedByToolkit` 标记：只有真正 probe 成功的答案才会被同步路由当作实时清单，探测失败回退目录，绝不会把已存路由写瘦。**卡片上没有「同步模型列表」按钮**：模型清单的更新走 dsh 自己的模型设置（点「获取可用模型」，清单由你确认后写入），避免一键把实时清单整体灌进路由；同一个动作的服务端路由 `POST /api/toolkit/sync-models` 仍然注册，只在被显式调用时生效（API/脚本用），且只作用于 `modelsRouteKey`。
 - **可搜索的模型选择器**：强制视觉 / 强制纯文本不再是逗号分隔的 id 文本框，而是按 id 或名称即时过滤的下拉选择器：点击候选加入为 chip、chip 上的 × 取消、输入框里回车可把候选外的 id 直接加入，Backspace 删除最后一个 chip。候选来自 `GET /api/toolkit/models`（`modelsRouteKey` 的 stored 条目 ∪ 运行时 listModels，按 id 去重排序，纯进程内读取、不发网络请求），弹窗每次打开时拉取一次——它只读当前已配置的模型，不改动任何东西。两个列表互斥：加入视觉会自动从纯文本移除，反之亦然。**选择器与两个强制列表仍然只针对 `modelsRouteKey`**（与发现包装的多路由范围不同）。
 - **启动修复**：给路由预写 wire protocol（`api`），让配置界面自身的保存也能通过服务性校验；并修复已存模型缺失的图像输入（配置界面保存时不带 `input` 字段）。强制视觉/纯文本列表一改动就立即作用于已存模型，无需重启或再同步。
 - **一次性迁移**：首次启动时若 `modelsApiKey` 为空，会从旧的 `quota-badges` 命名空间取用原 OpenCode Key、强制视觉/纯文本列表与路由形状；迁移标记与数据同一次写入，之后即使清空 Key 也不会被回填。
@@ -222,6 +222,7 @@ OpenCode Go 现在会 400 拒绝缺少 `x-opencode-session` 的请求（`{"type"
 | `modelsSyncPath` | `/api/toolkit/sync-models` | 显式同步的 same-origin 路由（卡片上没有入口，仅供 API/脚本；改动需重启；只同步主路由）。 |
 | `modelsPath` | `/api/toolkit/models` | 同源路由，列出选择器的候选模型。服务端只在启动时注册该路径（修改需重启），而卡片是实时读取的，因此在重启前改它会指向服务端尚未提供的路由。 |
 | `modelsRouteBaseURLs` | `{}` | 按路由键覆盖探测端点，给**自身 profile 没有 baseURL** 的目录路由（如 `minimax-cn`、`kimi-coding`）一个端点；值可以是端点字符串，或 `{ baseURL, api }`（路由 profile 未声明协议时用，例如 Anthropic 兼容端点写 `api: anthropic-messages`）；优先级低于该路由 stored `baseURL`。 |
+| `modelsRouteExtraModels` | `{}` | 端点**能调但从不列出**的型号 id，按路由键给，例如 `{ minimax-cn: [MiniMax-M3.1-Flash-Preview] }`。MiniMax 用同一凭据调这个 id 返回 200，而 `/anthropic/v1/models` 只列 8 个非 preview 型号——探测永远拿不到它。声明的 id 会追加到该路由的发现结果（排在端点自身清单之后，已存在的 id 不重复），无论实时探测是否成功都生效。 |
 | `modelsEnrichFromRegistry` | `true` | 是否用 models.dev 注册表补全缺失容量/模态。 |
 | `modelsRegistryProvider` | `opencode-go` | models.dev 中对应的 provider 目录名。 |
 | `modelsVision` | `[]` | 强制支持图像输入的模型 id。 |
@@ -254,6 +255,7 @@ OpenCode Go 现在会 400 拒绝缺少 `x-opencode-session` 的请求（`{"type"
 | `modelsSyncPath` | string | `/api/toolkit/sync-models` | modelCapability |
 | `modelsPath` | string | `/api/toolkit/models` | modelCapability |
 | `modelsRouteBaseURLs` | Record<string, string \| {baseURL,api?}> | `{}` | modelCapability |
+| `modelsRouteExtraModels` | Record<string, string[]> | `{}` | modelCapability |
 | `modelsEnrichFromRegistry` | boolean | `true` | modelCapability |
 | `modelsRegistryProvider` | string | `opencode-go` | modelCapability |
 | `modelsVision` | string[] | `[]` | modelCapability |
@@ -269,13 +271,21 @@ npm run smoke:client  # 客户端 bundle 的离线冒烟（不需要宿主）
 ```
 
 `npm test` 与 `npm run smoke:client` 自包含。`npm run smoke` 会 import `index.js`，
-而后者 import `@deepseek-ai/schemastery` 与 `@deepseek-ai/dsh-settings` 两个 peer——
-它们**不是**本包的依赖，所以要在能解析它们的检出里运行（dsh workspace，或已安装本包的 profile），
+而后者 import `@deepseek-ai/schemastery` 这个 peer——它**不是**本包的依赖，
+所以要在能解析它的检出里运行（dsh workspace，或已安装本包的 profile），
 而不是在裸 `npm install` 之后：
 
 ```sh
 cd /root/deepseek-harness && node /root/dsh-plugin-toolkit/scripts/smoke.mjs
 ```
+
+> **为什么不再 import `@deepseek-ai/dsh-settings`：** 该包的导出表随宿主构建变动。
+> 早期版本导出 `installSettingsSection` / `settingsNamespace`，当前 checkout 只导出
+> `{ SettingsConflictError, SettingsForms, redactSecrets }`。ESM 的具名导入缺失导出是
+> **链接期 SyntaxError**——它会让插件在 `apply` 之前就整个加载失败（没有 fiber），
+> 表现是设置卡片、同步路由与模型发现包装全部静默消失。因此本插件改为直接调用运行时
+> 服务 `sctx.settings.register(...)`，并自带 `settingsNamespace()` 校验函数，
+> 对 `@deepseek-ai/dsh-settings` 的 import 数归零。
 
 | 路径 | 内容 |
 |---|---|

@@ -442,10 +442,80 @@ function makeEnrichmentCtx(discoveries, { config, describe, credentials } = {}) 
   return { ctx, disposers };
 }
 
-/** One llm-pi-ai descriptor with the given stored route profiles. */
-function storedRoutes(providers) {
-  return () => [{ ns: LLM_PI_AI_NS, revision: 3, user: { providers } }];
+/**
+ * One llm-pi-ai descriptor with the given route profiles. The default layer is
+ * `value`, which is what the host really exposes: a route declared in the
+ * profile's `providers:` map lives in the composition layer, so it shows up in
+ * the effective section and NOT in `user` — that one carries only what the
+ * settings surface itself wrote.
+ */
+function storedRoutes(providers, layer = "value") {
+  return () => [{ ns: LLM_PI_AI_NS, revision: 3, [layer]: { providers } }];
 }
+
+test("installDiscoveryEnrichment: a profile-declared route is read from the effective section, not the user layer", async () => {
+  // The real shape: `providers:` lives in cordis.patch.yml (the composition
+  // layer), so describe() reports it under `value` while `user` is absent. A
+  // route read from `user` alone would look unconfigured, resolve no credential,
+  // and silently keep the catalog answer.
+  resetModelSyncCaches();
+  process.env.MINIMAX_CN_API_KEY = "sk-minimax";
+  const discoveries = new Map([[LLM_PI_AI_NS, async () => [{ id: "MiniMax-M3" }]]]);
+  const { ctx } = makeEnrichmentCtx(discoveries, {
+    config: {
+      ...BASE_CONFIG,
+      modelsRouteBaseURLs: {
+        "minimax-cn": { baseURL: "https://api.minimaxi.com/anthropic", api: "anthropic-messages" },
+      },
+    },
+    describe: () => [{
+      ns: LLM_PI_AI_NS,
+      revision: 3,
+      value: { providers: { "minimax-cn": { apiKeyEnv: "MINIMAX_CN_API_KEY" } } },
+      // base carries the same composition entry; user is empty because nothing
+      // was written from the settings surface.
+      base: { providers: { "minimax-cn": { apiKeyEnv: "MINIMAX_CN_API_KEY" } } },
+    }],
+  });
+  const seen = [];
+  const fetchStub = stubFetch((url, init) => {
+    seen.push({ url, init });
+    return listingResponse(["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5"]);
+  });
+  try {
+    installDiscoveryEnrichment(ctx);
+    const answer = await discoveries.get(LLM_PI_AI_NS)({ provider: "minimax-cn" });
+    assert.deepEqual(answer.map((model) => model.id), ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5"]);
+    assert.equal(answer.liveProbedAt !== undefined, true, "the probe really ran");
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].url, "https://api.minimaxi.com/anthropic/v1/models?limit=1000");
+    // The credential resolved from the route's apiKeyEnv, and the Anthropic
+    // protocol carries it as x-api-key rather than a Bearer token.
+    assert.equal(seen[0].init.headers["x-api-key"], "sk-minimax");
+    assert.equal(seen[0].init.headers.Authorization, undefined);
+  } finally {
+    fetchStub.restore();
+    delete process.env.MINIMAX_CN_API_KEY;
+  }
+});
+
+test("installDiscoveryEnrichment: a settings-surface route is still found in the user layer", async () => {
+  resetModelSyncCaches();
+  const discoveries = new Map([[LLM_PI_AI_NS, async () => [{ id: "catalog-only" }]]]);
+  const { ctx } = makeEnrichmentCtx(discoveries, {
+    describe: storedRoutes({ "kimi-coding": { baseURL: "https://api.kimi.com/coding", apiKeyEnv: "KIMI_CODING_API_KEY" } }, "user"),
+  });
+  process.env.KIMI_CODING_API_KEY = "sk-kimi";
+  const fetchStub = stubFetch(() => listingResponse(["k3", "k3-256k"]));
+  try {
+    installDiscoveryEnrichment(ctx);
+    const answer = await discoveries.get(LLM_PI_AI_NS)({ provider: "kimi-coding" });
+    assert.deepEqual(answer.map((model) => model.id), ["k3", "k3-256k", "catalog-only"]);
+  } finally {
+    fetchStub.restore();
+    delete process.env.KIMI_CODING_API_KEY;
+  }
+});
 
 test("installDiscoveryEnrichment: a non-primary route with a draft endpoint is probed and merged", async () => {
   resetModelSyncCaches();
@@ -542,6 +612,118 @@ test("installDiscoveryEnrichment: a route with no resolvable endpoint keeps the 
   } finally {
     fetchStub.restore();
   }
+});
+
+test("installDiscoveryEnrichment: modelsRouteExtraModels adds an id the endpoint never lists", async () => {
+  // The real case: MiniMax answers 200 for MiniMax-M3.1-Flash-Preview on the
+  // same key while /anthropic/v1/models omits it, so the listing alone can
+  // never surface it.
+  resetModelSyncCaches();
+  process.env.MINIMAX_CN_API_KEY = "sk-minimax";
+  const discoveries = new Map([[LLM_PI_AI_NS, async () => [{ id: "MiniMax-M3" }]]]);
+  const { ctx } = makeEnrichmentCtx(discoveries, {
+    config: {
+      ...BASE_CONFIG,
+      modelsRouteBaseURLs: { "minimax-cn": { baseURL: "https://api.minimaxi.com/anthropic", api: "anthropic-messages" } },
+      modelsRouteExtraModels: { "minimax-cn": ["MiniMax-M3.1-Flash-Preview", "MiniMax-M3"] },
+    },
+    describe: storedRoutes({ "minimax-cn": { apiKeyEnv: "MINIMAX_CN_API_KEY" } }),
+  });
+  const fetchStub = stubFetch(() => listingResponse(["MiniMax-M3", "MiniMax-M2.7"]));
+  try {
+    installDiscoveryEnrichment(ctx);
+    const answer = await discoveries.get(LLM_PI_AI_NS)({ provider: "minimax-cn" });
+    // The listing leads, the declared id follows, and the id the listing already
+    // carries is not duplicated (it keeps the listing's richer row).
+    assert.deepEqual(answer.map((model) => model.id), ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M3.1-Flash-Preview"]);
+    assert.equal(answer.filter((model) => model.id === "MiniMax-M3").length, 1);
+    assert.equal(answer.liveProbedAt !== undefined, true, "the probe still ran and tagged the answer");
+  } finally {
+    fetchStub.restore();
+    delete process.env.MINIMAX_CN_API_KEY;
+  }
+});
+
+test("installDiscoveryEnrichment: a declared id still arrives when the route cannot be probed", async () => {
+  // No endpoint resolves, so the probe is skipped — but the whole point of
+  // declaring the id is that the endpoint would not have mentioned it anyway.
+  resetModelSyncCaches();
+  const discoveries = new Map([[LLM_PI_AI_NS, async () => [{ id: "MiniMax-M3" }]]]);
+  const { ctx } = makeEnrichmentCtx(discoveries, {
+    config: { ...BASE_CONFIG, modelsRouteExtraModels: { "minimax-cn": ["MiniMax-M3.1-Flash-Preview"] } },
+  });
+  const fetchStub = stubFetch(() => listingResponse([]));
+  try {
+    installDiscoveryEnrichment(ctx);
+    const answer = await discoveries.get(LLM_PI_AI_NS)({ provider: "minimax-cn" });
+    assert.deepEqual(answer.map((model) => model.id), ["MiniMax-M3", "MiniMax-M3.1-Flash-Preview"]);
+    assert.equal(fetchStub.urls.length, 0, "no endpoint means no probe");
+    // The answer is NOT tagged live: the sync route must not persist it as a
+    // live listing, since no endpoint answered.
+    assert.equal(answer.liveProbedAt, undefined);
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+test("installDiscoveryEnrichment: declared ids are ignored for other routes", async () => {
+  resetModelSyncCaches();
+  const discoveries = new Map([[LLM_PI_AI_NS, async () => [{ id: "k3" }]]]);
+  const { ctx } = makeEnrichmentCtx(discoveries, {
+    config: { ...BASE_CONFIG, modelsRouteExtraModels: { "minimax-cn": ["MiniMax-M3.1-Flash-Preview"] } },
+  });
+  installDiscoveryEnrichment(ctx);
+  const answer = await discoveries.get(LLM_PI_AI_NS)({ provider: "kimi-coding" });
+  assert.deepEqual(answer.map((model) => model.id), ["k3"]);
+});
+
+test("installDiscoveryEnrichment: a host that refuses a catalog-less route is retried with the resolved endpoint", async () => {
+  // The live case (clinepass): pi-ai ships no catalog for the provider and the
+  // GUI's request names only the route, so the host's own discovery throws
+  // DISCOVERY_FAILED before this wrap ever sees a listing. Resolving the
+  // endpoint first and handing it back is what makes such a route fetchable.
+  resetModelSyncCaches();
+  const seen = [];
+  const discoveries = new Map([[LLM_PI_AI_NS, async (request) => {
+    seen.push(request?.baseURL ?? null);
+    if (request?.baseURL === undefined) {
+      throw new Error('pi-ai ships no catalog for provider "clinepass", so its models can only come from its endpoint');
+    }
+    // The host probed the endpoint we supplied: a real listing, no catalog.
+    return [{ id: "cline-pass/glm-5.3" }, { id: "cline-pass/kimi-k3" }, { id: "openai/gpt-5.5" }];
+  }]]);
+  const { ctx } = makeEnrichmentCtx(discoveries, {
+    config: {
+      ...BASE_CONFIG,
+      modelsRouteBaseURLs: { clinepass: { baseURL: "https://api.cline.bot/api/v1", api: "openai-completions" } },
+    },
+  });
+  const fetchStub = stubFetch(() => listingResponse([]));
+  try {
+    installDiscoveryEnrichment(ctx);
+    const answer = await discoveries.get(LLM_PI_AI_NS)({ provider: "clinepass" });
+    assert.deepEqual(answer.map((model) => model.id), ["cline-pass/glm-5.3", "cline-pass/kimi-k3", "openai/gpt-5.5"]);
+    assert.equal(answer.liveProbedAt !== undefined, true, "the host's listing is a live answer");
+    // First call without an endpoint, then the retry that carried it.
+    assert.deepEqual(seen, [null, "https://api.cline.bot/api/v1"]);
+    // The host already asked the endpoint, so this wrap must not ask it again.
+    assert.equal(fetchStub.urls.length, 0, "no second probe of the same endpoint");
+  } finally {
+    fetchStub.restore();
+  }
+});
+
+test("installDiscoveryEnrichment: a host refusal is rethrown when no endpoint can be resolved", async () => {
+  resetModelSyncCaches();
+  const discoveries = new Map([[LLM_PI_AI_NS, async () => {
+    throw new Error('pi-ai ships no catalog for provider "mystery-gateway"');
+  }]]);
+  const { ctx } = makeEnrichmentCtx(discoveries, { config: BASE_CONFIG });
+  installDiscoveryEnrichment(ctx);
+  await assert.rejects(
+    () => discoveries.get(LLM_PI_AI_NS)({ provider: "mystery-gateway" }),
+    /ships no catalog/,
+  );
 });
 
 test("installDiscoveryEnrichment: modelsRouteBaseURLs supplies an endpoint for a catalog route", async () => {

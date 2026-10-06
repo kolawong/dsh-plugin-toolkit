@@ -38,6 +38,13 @@
         # protocol is not stated in its profile. The primary route below needs
         # no entry.
         modelsRouteBaseURLs: {}
+        # Model ids an endpoint serves without ever listing them, keyed by route.
+        # MiniMax answers 200 for MiniMax-M3.1-Flash-Preview on the same key while
+        # /anthropic/v1/models omits it (preview ids stay off the public listing),
+        # so a hidden model has to be declared here to reach the picker. Example:
+        #   modelsRouteExtraModels:
+        #     minimax-cn: [MiniMax-M3.1-Flash-Preview]
+        modelsRouteExtraModels: {}
         modelsEnrichFromRegistry: true
         modelsRegistryProvider: opencode-go
         modelsVision: []
