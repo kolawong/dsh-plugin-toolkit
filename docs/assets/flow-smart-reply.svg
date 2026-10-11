@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="420" viewBox="0 0 960 420" role="img" aria-labelledby="t d">
+  <title id="t">smartReply — ghost-text suggested reply</title>
+  <desc id="d">A settled assistant message is folded by a state-only conversation definition into a last-summary store. The composer overlay POSTs it to the suggestion route, which resolves a route and credential through the model-capability resolvers, asks the model for candidate replies, and returns them. The overlay renders the first as gray ghost text measured onto the textarea; Tab accepts it through setDraft, arrows cycle candidates.</desc>
+  <defs>
+    <style>
+      .bg{fill:#ffffff;} .panel{fill:#f6f8fa;stroke:#d0d7de;} .card{fill:#ffffff;stroke:#d0d7de;}
+      .ghost{fill:#f6f8fa;stroke:#d0d7de;stroke-dasharray:4 3;}
+      .t{fill:#1f2328;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",Helvetica,Arial,sans-serif;}
+      .muted{fill:#59636e;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",Helvetica,Arial,sans-serif;}
+      .title{font-size:19px;font-weight:700;} .sub{font-size:12px;} .lab{font-size:11px;font-weight:700;letter-spacing:.06em;}
+      .name{font-size:12px;font-weight:600;} .grn{font-size:11px;}
+      .line{stroke:#d0d7de;stroke-width:1.5;fill:none;} .dash{stroke:#59636e;stroke-width:1.5;fill:none;stroke-dasharray:4 3;}
+      .faint{fill:#8c959f;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",Helvetica,Arial,sans-serif;font-size:11px;}
+      .chip{fill:#ddf4ff;stroke:#54aeff;} .warn{fill:#fff8c5;stroke:#d4a72c;}
+      .tiny{fill:#59636e;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC",Helvetica,Arial,sans-serif;font-size:10px;}
+    </style>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0 L10 5 L0 10 z" fill="#59636e"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="960" height="420"/>
+  <text class="t title" x="40" y="38">smartReply — a suggested reply in the composer</text>
+  <text class="muted sub" x="40" y="58">One call per settled turn, cached by (session, summary). Every failure means “no suggestion”, never an error in the composer.</text>
+
+  <!-- 1. fold -->
+  <rect class="panel" x="40" y="86" width="252" height="104" rx="10"/>
+  <text class="muted lab" x="56" y="108">BROWSER · STATE-ONLY</text>
+  <text class="t name" x="56" y="130">assistant/message settles</text>
+  <text class="faint" x="56" y="148">state-only conversation definition</text>
+  <text class="faint" x="56" y="164">no view target → transcript untouched</text>
+  <text class="faint" x="56" y="180">publishes the message tail + seq</text>
+
+  <path class="line" d="M292 138 L336 138" marker-end="url(#a)"/>
+
+  <!-- 2. store -->
+  <rect class="panel" x="336" y="104" width="196" height="68" rx="10"/>
+  <text class="muted lab" x="352" y="126">LAST SUMMARY</text>
+  <text class="t name" x="352" y="148">{ seq, text }</text>
+  <text class="faint" x="352" y="164">cleared on session switch</text>
+
+  <path class="line" d="M532 138 L576 138" marker-end="url(#a)"/>
+
+  <!-- 3. route -->
+  <rect class="panel" x="576" y="76" width="344" height="124" rx="10"/>
+  <text class="muted lab" x="592" y="98">HOST · POST /api/toolkit/suggest-reply</text>
+  <text class="t name" x="592" y="120">resolveRouteEndpoint / resolveRouteApiKey</text>
+  <text class="faint" x="592" y="137">model-sync's own resolvers — reused, not re-derived</text>
+  <rect class="warn" x="592" y="146" width="312" height="50" rx="7"/>
+  <text class="tiny" x="602" y="161">declines rather than guessing:</text>
+  <text class="tiny" x="602" y="175">no endpoint · no credential · non-OpenAI route · no model</text>
+  <text class="tiny" x="602" y="189">→ no suggestion, never a bad request</text>
+
+  <!-- decline branch -->
+  <path class="dash" d="M920 208 L920 236 L760 236 L760 214" marker-end="url(#a)"/>
+  <rect class="card" x="620" y="222" width="140" height="30" rx="7"/>
+  <text class="muted grn" x="634" y="241">ghost stays hidden</text>
+
+  <!-- 4. overlay render -->
+  <path class="line" d="M434 172 L434 268" marker-end="url(#a)"/>
+
+  <rect class="panel" x="40" y="268" width="588" height="112" rx="10"/>
+  <text class="muted lab" x="56" y="290">BROWSER · conversation.input.overlay</text>
+  <text class="t name" x="56" y="312">gray ghost text, MEASURED onto the textarea box</text>
+  <rect class="ghost" x="56" y="322" width="556" height="34" rx="7"/>
+  <text class="faint" x="68" y="344">继续跑一遍测试，确认这两处修改没有回归</text>
+  <rect class="chip" x="430" y="330" width="170" height="18" rx="9"/>
+  <text class="muted grn" x="440" y="343">Tab 填入 · 1/3</text>
+  <text class="faint" x="56" y="372">shows only while the draft is empty and the turn is idle · typing dismisses it · the stock placeholder steps aside</text>
+
+  <path class="line" d="M628 324 L668 324" marker-end="url(#a)"/>
+
+  <!-- 5. accept -->
+  <rect class="panel" x="668" y="268" width="252" height="112" rx="10"/>
+  <text class="muted lab" x="684" y="290">ACCEPT</text>
+  <text class="t name" x="684" y="312">inputActions.setDraft</text>
+  <text class="faint" x="684" y="331">one undo step · editor internals untouched</text>
+  <text class="faint" x="684" y="348">Tab = accept · ↑↓ = cycle · Esc = dismiss</text>
+  <text class="faint" x="684" y="365">Tab captured only on the focused composer</text>
+</svg>

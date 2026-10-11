@@ -24,6 +24,7 @@ Everything is wired through public extension surfaces — settings namespaces, t
   - [`changeReport`](#changereport)
   - [`opencodeSession`](#opencodesession)
   - [`modelCapability`](#modelcapability)
+  - [`smartReply`](#smartreply)
 - [Configuration reference](#configuration-reference)
 - [Development](#development)
 - [Graduation rules](#graduation-rules)
@@ -41,6 +42,7 @@ Everything is wired through public extension surfaces — settings namespaces, t
 | 5 | [`changeReport`](#changereport) | Codex-style per-turn file-change card at the turn tail | on | client |
 | 6 | [`opencodeSession`](#opencodesession) | Stable `x-opencode-session` header on OpenCode Go/Zen requests | on | host |
 | 7 | [`modelCapability`](#modelcapability) | Keeps one llm-pi-ai route's model list, capacities and image support current | on | host + client |
+| 8 | [`smartReply`](#smartreply) | Gray ghost-text suggested reply in the composer, Tab to fill | on | client + host |
 
 ## Install (web profile)
 
@@ -63,9 +65,10 @@ The package is split into a browser half and a host half; both read the same `to
 
 | Half | Files | Responsibility | Seams used |
 |---|---|---|---|
-| Client | `client.js` | Settings card, inline edit UI, sidebar re-sort, `/`-menu rewrite, change-report card, model-id pickers | Client module table, conversation node/turn-tail slots, `remote.*` namespace wraps, settings scope |
+| Client | `client.js` | Settings card, inline edit UI, sidebar re-sort, `/`-menu rewrite, change-report card, composer ghost-text suggestion, model-id pickers | Client module table, conversation node/turn-tail slots, `conversation.input.overlay`, `inputActions`, `remote.*` namespace wraps, settings scope |
 | Host | `index.js` | Settings schema and defaults, default chat workspace directory, OpenCode session-header stamping | `settings`, `llm/stream`, `globalThis.fetch` |
-| Host | `model-sync.js` + `models-core.js` | Model discovery wrap, sync/listing routes, capacity and modality enrichment | `llm` model discovery, `webServer` routes, settings stores |
+| Host | `model-sync.js` + `models-core.js` | Model discovery wrap, sync/listing routes, capacity and modality enrichment, and the endpoint/credential resolvers `suggest-api.js` reuses | `llm` model discovery, `webServer` routes, settings stores |
+| Host | `suggest-api.js` + `suggest-core.js` | Suggestion route and the pure prompt/salvage logic behind it | `webServer` routes, `model-sync` resolvers |
 
 Design rules that hold across the package:
 
@@ -77,7 +80,7 @@ Design rules that hold across the package:
 ## The settings card
 
 <p align="center">
-  <img src="docs/assets/settings-card.svg" alt="The DSH-Toolkit settings card with seven half-width optimization sub-cards, each with an icon, title, identifier and on badge" width="100%">
+  <img src="docs/assets/settings-card.svg" alt="The DSH-Toolkit settings card with eight half-width optimization sub-cards, each with an icon, title, identifier and on badge" width="100%">
 </p>
 
 The card renders one sub-card per optimization with a live on/off badge and an **Enable all / Disable all** pair. Opening a sub-card shows that optimization's own description and fields (for example the chat directory, or the model-capability key and pickers).
@@ -231,6 +234,34 @@ How it works, and its bounds:
 
 > Note: this optimization carries a server route and its own config fields, so it already meets the graduation rule below; it deliberately stays in the Toolkit for now as one numbered optimization.
 
+### `smartReply`
+
+A suggested reply shown as **gray ghost text inside the composer**, accepted with **Tab**. When a turn settles, the last assistant message is handed to a small model that drafts a few things *you* might say next; the first is shown inline, `↑`/`↓` cycle the rest, `Esc` dismisses, and `Tab` fills the active one into the draft.
+
+<p align="center">
+  <img src="docs/assets/flow-smart-reply.svg" alt="A settled assistant message feeds a suggestion route; the candidates return to the composer as ghost text, and Tab accepts the active one through setDraft" width="100%">
+</p>
+
+How it works, and its bounds:
+
+- **Only when it is actually useful.** The ghost renders only while the composer is empty *and* the turn is idle — never mid-submission, never on top of something you have already typed. Typing a character dismisses it immediately.
+- **Alignment is measured, not guessed.** The composer is a Lexical contenteditable whose padding, font, line-height and letter-spacing are dsh's own CSS. The ghost layer copies the textarea's *computed* geometry and typography and is positioned over its measured box, so it cannot drift when that CSS changes. While a ghost is showing, the composer's own placeholder steps aside the same way dsh hides it for IME composing — one marker attribute, removed again when the ghost goes.
+- **The accept path is the public one.** `Tab` goes through the conversation service's `inputActions.setDraft` (the same action voice-input uses), so it is one undo step and never touches editor internals. `Tab` is captured only while the composer has focus *and* a suggestion is showing, so no other `Tab` on the page changes meaning.
+- **One call per turn, cached by (session, summary).** A failed call resolves to "no suggestion" and is cached too, so a dead endpoint costs one request per turn rather than one per keystroke. A session switch or a reconnect clears the cache, so the previous conversation's summary can never be suggested in the next one.
+- **The route resolves through modelCapability's own resolvers.** `resolveRouteEndpoint` / `resolveRouteApiKey` are exported from `model-sync.js` for exactly this, so suggestions reach the provider your profile is already configured for. The call **declines rather than guessing**: no resolvable endpoint, no credential, a route that does not speak `openai-completions`, or no model all yield no suggestion instead of a bad request.
+- **The transcript is untouched.** The accumulator is a state-only conversation definition with no view target, so it renders nothing; the stock assistant bubble behaves exactly as before.
+- Non-invasive like every other optimization here: public slots and public input actions only, no dsh source changes.
+
+| Config | Default | Meaning |
+|---|---|---|
+| `optimizations.smartReply` | `true` | Master switch for the ghost text and the suggestion call. |
+| `suggestRouteKey` | `""` → `modelsRouteKey` | llm-pi-ai route the suggestion call uses. Empty reuses the modelCapability primary route. |
+| `suggestModel` | `""` | Model asked to draft the candidates. Empty resolves at call time to the route's own first catalog id. Suggestions run on every turn — name a cheap, fast model. |
+| `suggestPath` | `/api/toolkit/suggest-reply` | Same-origin route the client POSTs to (registered once; changing it needs a restart). |
+| `suggestLanguage` | `""` | Reply-language pin; empty follows the UI language per request. |
+| `suggestCount` | `3` | Candidate replies kept per turn. |
+| `suggestTimeoutSec` | `12` | Total per-request deadline in seconds, headers **and** body. |
+
 ## Configuration reference
 
 All fields live in the `toolkit` settings namespace. The composition defaults are declared in `cordis.patch.yml`, the schema in `index.js`, and the public types in `index.d.ts`.
@@ -244,6 +275,7 @@ All fields live in the `toolkit` settings namespace. The composition defaults ar
 | `optimizations.changeReport` | boolean | `true` | changeReport |
 | `optimizations.opencodeSession` | boolean | `true` | opencodeSession |
 | `optimizations.modelCapability` | boolean | `true` | modelCapability |
+| `optimizations.smartReply` | boolean | `true` | smartReply |
 | `modelsMigratedFromQuotaBadges` | boolean | `false` | modelCapability — internal one-way marker set when the former quota-badges model settings were adopted; never set it by hand. |
 | `chatWorkspacePath` | string | `""` → `<DSH_HOME>/chat` | workspacelessChat |
 | `chatWorkspaceTitle` | string | `通用对话` | workspacelessChat |
@@ -261,6 +293,12 @@ All fields live in the `toolkit` settings namespace. The composition defaults ar
 | `modelsVision` | string[] | `[]` | modelCapability |
 | `modelsTextOnly` | string[] | `[]` | modelCapability |
 | `modelsTimeoutSec` | number | `10` | modelCapability |
+| `suggestRouteKey` | string | `""` | smartReply — empty reuses `modelsRouteKey` |
+| `suggestModel` | string | `""` | smartReply — empty uses the route's first catalog id |
+| `suggestPath` | string | `/api/toolkit/suggest-reply` | smartReply |
+| `suggestLanguage` | string | `""` | smartReply — `""` follows the UI language |
+| `suggestCount` | number | `3` | smartReply |
+| `suggestTimeoutSec` | number | `12` | smartReply |
 
 ## Development
 
@@ -293,8 +331,9 @@ cd /root/deepseek-harness && node /root/dsh-plugin-toolkit/scripts/smoke.mjs
 | Path | Contents |
 |---|---|
 | `index.js` / `index.d.ts` | Host half: settings namespace, chat directory, OpenCode fetch wrap. |
-| `model-sync.js` | Host half: discovery wrap, sync/listing routes, enrichment and migration. |
+| `model-sync.js` | Host half: discovery wrap, sync/listing routes, enrichment and migration; also exports the endpoint/credential resolvers smartReply reuses. |
 | `models-core.js` | Pure merge/enrich/diff helpers (no network, no settings access). |
+| `suggest-api.js` / `suggest-core.js` | Host half: the suggestion route, and the pure prompt-building / JSON-salvage logic. |
 | `client.js` | Browser half: the settings card and every client-side optimization. |
 | `cordis.patch.yml` | Composition defaults inserted into the dsh bundle patch. |
 | `tests/` | Unit tests: the pure core, the sync route, the settings card, and `index.js` (the fetch wrap + `llm/stream` session chain). |

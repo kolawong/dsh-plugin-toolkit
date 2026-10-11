@@ -211,9 +211,13 @@ changeReportCallback.cb({
   },
   "remote.session": {},
 });
-equal(registeredDefinitions.length, 1, "turn-data definition registered once");
+// Two state-only definitions share the uiConversation registry: changeReport's
+// turn hunks and smartReply's last-assistant-summary. Assert per kind, not by
+// count, so a future third definition is a line here rather than a failure.
+equal(registeredDefinitions.filter((d) => d.kind === "changeReport").length, 1, "changeReport definition registered once");
+equal(registeredDefinitions.filter((d) => d.kind === "smartReplySummary").length, 1, "smartReply definition registered once");
 
-const def = registeredDefinitions[0];
+const def = registeredDefinitions.find((d) => d.kind === "changeReport");
 let defCtx = { state: def.start({}, { event: { type: 'turn/start', data: { turn: 7 } } }) };
 const feedEvent = (event) => { defCtx = { state: def.update(defCtx, { event }) }; };
 feedEvent({ type: 'tool/call', data: { turn: 7, callId: 'c1', name: 'edit', arguments: JSON.stringify({ file_path: '/x/a.ts', old_string: 'l1\nl2', new_string: 'L1' }) } });
@@ -293,6 +297,55 @@ equal(model8.files.length, 1, 'turn 8 aggregates into one file');
 equal(model8.added, 3, 'd.ts: write 2 lines + edit 1 line');
 equal(model8.removed, 1, 'd.ts: edit removes 1 line');
 
+// ── smartReply: state-only assistant-summary accumulator ────────────────────
+// The ghost text is fed from the LAST settled assistant message. Two contract
+// rules below exist because breaking either one took conversation history down
+// with it (see scripts/verify-smart-reply-history.mjs for the real-assembler
+// reproduction that caught them):
+//   1. the Location-data key MUST equal the definition's kind, and
+//   2. every match must be role 'start' — matching `step/start` as the start
+//      and the message as an update throws "received an update before its start
+//      Match" whenever a history window begins mid-turn.
+const replyDef = registeredDefinitions.find((d) => d.kind === 'smartReplySummary');
+ok(replyDef, "smartReply summary definition present");
+equal(replyDef.target, undefined, "state-only: it declares no view target, so it renders nothing");
+equal(replyDef.match({ type: 'assistant/message', surfaceOp: 'append', data: { turn: 3, step: 1 } }).role, 'start', 'the settlement is its own lifecycle start');
+equal(replyDef.match({ type: 'step/start', data: { turn: 3, step: 1 } }), null, 'step/start is never matched: a backfilled window has no start for it');
+equal(replyDef.match({ type: 'assistant/live-chunk', data: { turn: 3, step: 1 } }), null, 'stream chunks are ignored');
+equal(replyDef.match({ type: 'tool/result', data: { turn: 3 } }), null, 'tool results are ignored');
+equal(replyDef.match({ type: 'assistant/message', data: { turn: 3, step: 1 } }), null, 'a settlement without surfaceOp append is ignored');
+
+const firstSettlement = {
+  seq: 5,
+  type: 'assistant/message',
+  data: {
+    turn: 3,
+    step: 1,
+    message: { content: [
+      { kind: 'reasoning', text: 'ignore me' },
+      { kind: 'text', text: '已完成两处修改。' },
+      { kind: 'text', text: '要不要我继续跑测试？' },
+    ] },
+  },
+};
+let replyCtx = { state: replyDef.start({}, { event: firstSettlement }) };
+equal(replyCtx.state.text, '已完成两处修改。要不要我继续跑测试？', 'start() folds the settlement: text blocks joined, reasoning skipped');
+equal(replyCtx.state.seq, 5, 'settlement seq recorded');
+
+const feedReply = (event) => { replyCtx = { state: replyDef.update(replyCtx, { event }) }; };
+// A tool-only settlement carries no text and must NOT clear the summary.
+feedReply({ type: 'assistant/message', seq: 9, surfaceOp: 'append', data: { turn: 3, step: 1, message: { content: [{ kind: 'tool-call', callId: 'c1', name: 'bash', argsRaw: '{}' }] } } });
+equal(replyCtx.state.text, '已完成两处修改。要不要我继续跑测试？', 'a tool-only step leaves the summary intact');
+
+const replyLocation = replyDef.buildLocationData(replyCtx, 'step', undefined);
+ok(replyLocation, 'step location data built');
+equal(replyLocation.key, replyDef.kind, 'the data key IS the definition kind — the assembler rejects any other pair');
+equal(replyLocation.kind, 'step', 'published through the step scope it was asked for');
+equal(replyLocation.value.text, '已完成两处修改。要不要我继续跑测试？', 'summary published');
+equal(replyDef.buildLocationData(replyCtx, 'step', replyLocation), replyLocation, 'unchanged summary reuses the previous location data');
+equal(replyDef.buildLocationData(replyCtx, 'turn', undefined), null, 'turn scope declines; only step carries the summary');
+equal(replyDef.buildLocationData({ state: undefined }, 'step', undefined), null, 'a startless Context (backfilled window) publishes nothing instead of throwing');
+
 // ── idempotence: re-apply the whole plugin ─────────────────────────────────
 exports.apply(ctx);
 const again = await commandsSvc.list("s1");
@@ -302,6 +355,12 @@ equal(again.value[0].description, "压缩更早的对话历史", "double apply s
 commandsSvc.invokeRemote = () => ({ ok: false, error: { code: "x", message: "y" } });
 const errResult = await commandsSvc.list("s1");
 deepEqual(errResult, { ok: false, error: { code: "x", message: "y" } }, "error results pass through");
-equal(registeredDefinitions.length, 1, "re-apply does not double-register the definition");
+for (const kind of ["changeReport", "smartReplySummary"]) {
+  equal(
+    registeredDefinitions.filter((d) => d.kind === kind).length,
+    1,
+    `re-apply does not double-register the ${kind} definition`,
+  );
+}
 
 console.log("toolkit client smoke: OK");

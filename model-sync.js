@@ -909,14 +909,21 @@ function routeRegistered(llm, routeKey) {
  * @returns {Promise<object>} `{ ok, routeKey, count, models, forcedVision, forcedTextOnly }`
  *   or `{ ok: false, error: { code, message } }`.
  */
-export async function knownRouteModels(ctx) {
-  const config = ctx.config();
-  if (!config.enabled) {
-    return {
-      ok: false,
-      error: { code: "disabled", message: "modelCapability is disabled in plugin settings" },
-    };
-  }
+/**
+ * The model ids one route can offer a picker: the stored llm-pi-ai rows (which
+ * keep hand-tuned capacities) unioned with the runtime's own view, deduped by
+ * id and sorted for a stable list. In-process reads only — never probes the
+ * network, so opening a dialog stays instant even when the endpoint is down.
+ *
+ * Shared by the modelCapability card (via {@link knownRouteModels}) and the
+ * smartReply suggestion-model picker, which needs the same list for an
+ * ARBITRARY route rather than only the primary one.
+ * @param {object} ctx - the model-capability context.
+ * @param {string} routeKey - the route whose models to list.
+ * @returns {Promise<{models: object[], listed: boolean}>} the union, and whether
+ *   the runtime view answered (false means only stored rows contributed).
+ */
+export async function routeModelOptions(ctx, routeKey) {
   const byId = new Map();
   const remember = (model) => {
     if (model === null || typeof model !== "object") return;
@@ -938,16 +945,28 @@ export async function knownRouteModels(ctx) {
     byId.set(id, entry);
   };
   // Stored user-layer rows lead: they keep capacities the runtime view drops.
-  for (const model of await storedRouteModels(ctx, config.routeKey)) remember(model);
+  for (const model of await storedRouteModels(ctx, routeKey)) remember(model);
   let listed = true;
   try {
-    for (const model of (await ctx.llm?.listModels?.(config.routeKey)) ?? []) remember(model);
+    for (const model of (await ctx.llm?.listModels?.(routeKey)) ?? []) remember(model);
   } catch {
-    // A route that cannot list still offers its stored rows — but if it also
-    // stores nothing, say why instead of answering an empty list.
+    // A route that cannot list still offers its stored rows.
     listed = false;
   }
-  if (!listed && byId.size === 0 && routeRegistered(ctx.llm, config.routeKey) === false) {
+  const models = [...byId.values()].sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+  return { models, listed };
+}
+
+export async function knownRouteModels(ctx) {
+  const config = ctx.config();
+  if (!config.enabled) {
+    return {
+      ok: false,
+      error: { code: "disabled", message: "modelCapability is disabled in plugin settings" },
+    };
+  }
+  const { models, listed } = await routeModelOptions(ctx, config.routeKey);
+  if (!listed && models.length === 0 && routeRegistered(ctx.llm, config.routeKey) === false) {
     return {
       ok: false,
       error: {
@@ -956,7 +975,6 @@ export async function knownRouteModels(ctx) {
       },
     };
   }
-  const models = [...byId.values()].sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
   return {
     ok: true,
     routeKey: config.routeKey,
@@ -1192,12 +1210,16 @@ function storedRouteHeaders(profile) {
  * legacy `modelsBaseURL`/`modelsRouteApi`. A catalog route whose profile names
  * no endpoint therefore has nothing to probe; the caller keeps the host's
  * catalog answer rather than guessing a URL.
+ *
+ * Exported so the smartReply suggestion call — which also must not guess a URL,
+ * and also must never probe into a guaranteed 401 — resolves its endpoint by
+ * exactly this precedence instead of growing a second, drifting copy of it.
  * @param {object} ctx - the model-capability context.
  * @param {string} routeKey - the llm-pi-ai route the request names.
  * @param {{baseURL?: string, api?: string}} [request] - the surface's draft.
  * @returns {{baseURL: string, api: string, headers: Record<string, string>} | undefined}
  */
-function resolveRouteEndpoint(ctx, routeKey, request) {
+export function resolveRouteEndpoint(ctx, routeKey, request) {
   const current = ctx.config();
   const profile = storedRouteProfile(ctx, routeKey);
   const isPrimary = routeKey === current.routeKey;
@@ -1237,12 +1259,15 @@ function resolveRouteEndpoint(ctx, routeKey, request) {
  * two-tier resolution llm-pi-ai performs for its own requests. The plugin's
  * own modelsApiKey / modelsApiKeyEnvVar remain the primary route's fallback, so
  * an existing opencode-go setup keeps working with no configuration change.
+ *
+ * Exported for the same reason as {@link resolveRouteEndpoint}: the smartReply
+ * suggestion call needs a credential by this resolution, not a second guess.
  * @param {object} ctx - the model-capability context.
  * @param {string} routeKey - the llm-pi-ai route the request names.
  * @param {{apiKey?: string}} [request] - the surface's draft.
  * @returns {Promise<string>} the credential, or "" when none resolves.
  */
-async function resolveRouteApiKey(ctx, routeKey, request) {
+export async function resolveRouteApiKey(ctx, routeKey, request) {
   const draft = typeof request?.apiKey === "string" ? request.apiKey.trim() : "";
   if (draft !== "") return draft;
   const profile = storedRouteProfile(ctx, routeKey);

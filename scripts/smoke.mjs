@@ -152,6 +152,7 @@ mod.apply(ctx, {
     changeReport: true,
     opencodeSession: true,
     modelCapability: true,
+    smartReply: true,
   },
   chatWorkspacePath: "",
   chatWorkspaceTitle: "通用对话",
@@ -159,11 +160,13 @@ mod.apply(ctx, {
 });
 
 // The modelCapability half waits on its own services, the slash-i18n API waits
-// on webServer alone, and the settings section keeps waiting on settings alone.
-equal(injectCalls.length, 3, "three inject waits: model capability + slash-i18n API + settings section");
+// on webServer alone, the smartReply route waits on webServer+llm, and the
+// settings section keeps waiting on settings alone.
+equal(injectCalls.length, 4, "four inject waits: model capability + slash-i18n API + suggest route + settings section");
 equal(injectCalls[0].join(","), "settings,llm,webServer", "modelCapability waits on settings+llm+webServer");
 equal(injectCalls[1].join(","), "webServer", "slash-i18n API waits on webServer");
-equal(injectCalls[2].join(","), "settings", "settings section waits on settings");
+equal(injectCalls[2].join(","), "webServer,llm,settings", "smartReply route waits on webServer+llm+settings");
+equal(injectCalls[3].join(","), "settings", "settings section waits on settings");
 
 equal(registrations.length, 1, "one namespace registration");
 equal(registrations[0].ns, "toolkit", "namespace key equals the card key");
@@ -175,6 +178,9 @@ equal(registrations[0].opts.base.optimizations.slashI18n, true, "base carries th
 equal(registrations[0].opts.base.optimizations.changeReport, true, "base carries the changeReport toggle");
 equal(registrations[0].opts.base.optimizations.opencodeSession, true, "base carries the opencodeSession toggle");
 equal(registrations[0].opts.base.optimizations.modelCapability, true, "base carries the modelCapability toggle");
+equal(registrations[0].opts.base.optimizations.smartReply, true, "base carries the smartReply toggle");
+equal(registrations[0].resolved.suggestPath, "/api/toolkit/suggest-reply", "resolved section carries the suggest route");
+equal(registrations[0].resolved.suggestCount, 3, "resolved section carries the candidate count");
 equal(registrations[0].resolved.modelsRouteKey, "opencode-go", "resolved section carries the model route key");
 equal(registrations[0].resolved.modelsSyncPath, "/api/toolkit/sync-models", "resolved section carries the sync route");
 equal(registrations[0].resolved.modelsPath, "/api/toolkit/models", "resolved section carries the picker route");

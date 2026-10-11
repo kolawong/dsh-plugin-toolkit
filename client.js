@@ -50,6 +50,8 @@ window.__ModuleLoader__.load({
     const IconBranchOutline16 = primitives.IconBranchOutlineRegular || primitives.IconBranchOutline16 || (() => null);
     const IconApiOutline14 = primitives.IconApiOutlineRegular || primitives.IconApiOutline14 || (() => null);
     const IconGaugeOutline16 = primitives.IconGaugeOutlineRegular || primitives.IconGaugeOutline16 || (() => null);
+    /** Fallback glyph for smartReply, so a primitive rename costs a blank card, not a crash. */
+    const IconSparklesOutline16 = primitives.IconSparklesOutlineRegular || primitives.IconSparklesOutline16 || IconGaugeOutline16;
 
     /** Fallback model route; the live value comes from the settings section. */
     const MODELS_PATH = "/api/toolkit/models";
@@ -222,6 +224,20 @@ window.__ModuleLoader__.load({
       optModelsShort: "同步模型清单、补全上下文与图像能力",
       optModelsDesc:
         "把每条 llm-pi-ai 路由端点实时的模型清单与已安装目录合并：新增模型立即出现在选择器中、无需重启。缺失的上下文/输出上限由 models.dev 注册表与同族模型补全；图像输入按其他已注册 provider 的同 id 声明借用；也可在此强制某个模型支持或不支持图像。",
+      optReplyTitle: "建议回复",
+      optReplyShort: "输入框灰字提示建议回复，Tab 填入",
+      optReplyDesc:
+        "每轮回答结束后，把最后一条 AI 回复交给一个小模型，生成 1-3 条「你接下来可能说的话」，以灰色文字显示在输入框里；按 Tab 填入，↑↓ 切换候选，Esc 取消。只在输入框为空且本轮空闲时出现，打字即消失。调用失败会静默隐藏，不会打断正常输入。",
+      smartReplyKeyLabel: "建议模型",
+      smartReplyKeyPlaceholder: "留空则用该路由的第一个模型",
+      smartReplyKeyHint: "建议回复每轮都会调用一次，建议填一个便宜、快的小模型；留空时复用「模型能力」的路由与密钥。",
+      smartReplyCountLabel: "候选条数",
+      smartReplyRouteLabel: "调用路由",
+      smartReplyRouteHint: "留空则复用「模型能力」的主路由 {route}。",
+      smartReplyRouteDefault: "默认（{route}）",
+      smartReplyLanguageLabel: "回复语言",
+      smartReplyTimeoutLabel: "超时（秒）",
+      hint: "Tab 填入 · {tab}/{total}",
       modelsKeyLabel: "OpenCode API Key",
       modelsKeyPlaceholder: "粘贴 opencode.ai 的 API Key",
       modelsKeyHint: "留空时回退读取环境变量 {env}",
@@ -349,6 +365,20 @@ window.__ModuleLoader__.load({
       optModelsShort: "Sync the model list, capacities and image support",
       optModelsDesc:
         "Merge every llm-pi-ai route's live endpoint listing over the installed catalog: new models become selectable immediately, with no restart. Missing context/output limits are filled from the models.dev registry and from sized siblings; image input is borrowed from any other registered provider that declares the same id multimodal, and a model can be forced vision-capable or text-only here.",
+      optReplyTitle: "Suggested reply",
+      optReplyShort: "Ghost-text suggested reply in the composer, Tab to fill",
+      optReplyDesc:
+        "After each answer settles, the last AI reply is handed to a small model that drafts a few things you might say next, shown as gray text in the composer. Tab fills it, ↑↓ switch candidate, Esc dismisses. It appears only while the composer is empty and the turn is idle, and disappears as soon as you type. A failed call hides silently and never blocks normal input.",
+      smartReplyKeyLabel: "Suggestion model",
+      smartReplyKeyPlaceholder: "Empty uses the route's first model",
+      smartReplyKeyHint: "Suggestions are requested once per turn — name a cheap, fast model here. Empty reuses Model capability's route and key.",
+      smartReplyCountLabel: "Candidates",
+      smartReplyRouteLabel: "Calling route",
+      smartReplyRouteHint: "Empty reuses Model capability's primary route ({route}).",
+      smartReplyRouteDefault: "Default ({route})",
+      smartReplyLanguageLabel: "Reply language",
+      smartReplyTimeoutLabel: "Timeout (seconds)",
+      hint: "Tab to fill · {tab}/{total}",
       modelsKeyLabel: "OpenCode API key",
       modelsKeyPlaceholder: "Paste your opencode.ai API key",
       modelsKeyHint: "Empty falls back to the {env} environment variable",
@@ -1957,6 +1987,437 @@ window.__ModuleLoader__.load({
       });
     }
 
+    // ── smartReply: gray ghost-text suggested reply, Tab to accept ─────────────
+
+    /**
+     * Faces captured in apply for smartReply. `scope` is the bound settings
+     * scope (the toggle and the route path are re-read at use time, so both a
+     * remount and a settings edit take effect immediately).
+     */
+    const smartReplyRefs = { scope: undefined };
+
+    /**
+     * The definition's kind IS its Location-data key. The assembler rejects any
+     * other pair outright ("published Location data key … expected its owned
+     * kind"), so the two are declared ONCE here and never written separately —
+     * the previous version spelled them differently and threw on every settled
+     * assistant message, which took conversation rendering down with it.
+     */
+    const SMART_KIND = "smartReplySummary";
+
+    /**
+     * The last settled assistant message, published by the accumulator below.
+     *
+     * The write happens inside `buildLocationData`, which the engine calls while
+     * materializing a location — not while another component renders — and it is
+     * guarded by seq, so a rebuild can never move the summary backwards. This is
+     * a contained side effect rather than a pure fold, and it is what lets a
+     * composer-scoped slot (which receives no turn/step location data of its
+     * own) read the transcript.
+     */
+    const smartReplyLast = makeTinyStore(undefined);
+
+    /**
+     * Text of one settled assistant message. The message body is a block list;
+     * only text blocks are the summary, and reasoning/tool-call blocks are
+     * skipped rather than rendered as gibberish.
+     * @param {any} message - the `assistant/message` event's message.
+     * @returns {string} the message's text, or "" when it carries none.
+     */
+    function assistantTextOf(message) {
+      const content = message?.content;
+      if (typeof content === "string") return content;
+      if (!Array.isArray(content)) return "";
+      return content
+        .filter((block) => block?.kind === "text" || block?.type === "text")
+        .map((block) => (typeof block.text === "string" ? block.text : ""))
+        .join("");
+    }
+
+    /**
+     * State-only conversation definition accumulating the last settled assistant
+     * message per step. It declares NO view target, so it renders nothing of its
+     * own — the transcript is untouched and the stock assistant bubble behaves
+     * exactly as before.
+     */
+    const smartReplySummaryDefinition = {
+      kind: SMART_KIND,
+      /**
+       * The assistant settlement IS this definition's lifecycle, not `step/start`.
+       *
+       * Loading older history hands the assembler a window that begins mid-turn,
+       * where an `assistant/message` legitimately arrives with its `step/start`
+       * outside the window. Matching `step/start` as the start role and the
+       * message as an update made the engine throw "received an update before
+       * its start Match" on exactly that path — the backfill one. Declaring
+       * every match as `start` is self-correcting instead: the engine treats a
+       * later match as an update once the Context already has its start, and
+       * `matches[0]` is then always the start it replays from.
+       */
+      match: (event) => {
+        if (event.type !== "assistant/message" || event.surfaceOp !== "append") return null;
+        return { id: `${event.data.turn}:${event.data.step}`, role: "start" };
+      },
+      start: (_context, match) => ({
+        turn: match.event.data.turn,
+        step: match.event.data.step,
+        seq: match.event.seq,
+        text: assistantTextOf(match.event.data.message),
+      }),
+      update: (context, match) => {
+        if (match.event.type !== "assistant/message") return context.state;
+        const text = assistantTextOf(match.event.data.message);
+        // A settlement carrying no text (a pure tool-call step) leaves the
+        // previous state alone rather than clearing a good summary.
+        if (text === "") return context.state;
+        return { ...context.state, seq: match.event.seq, text };
+      },
+      publication: () => "immediate",
+      buildLocationData: (context, scope, previous) => {
+        if (scope !== "step" || context.state === undefined) return null;
+        const state = context.state;
+        if (state.text === "" || state.seq < 0) return null;
+        // Reconcile the store BEFORE the memoized early return below. That
+        // early return is what keeps re-materialization cheap, but it also means
+        // a cleared store (a session switch) would never be refilled from an
+        // unchanged summary — so the write has to happen on both paths.
+        const value = { seq: state.seq, turn: state.turn, text: state.text };
+        const current = smartReplyLast.getSnapshot();
+        if (current?.seq !== state.seq || current?.text !== state.text) {
+          smartReplyLast.set(value);
+        }
+        if (
+          previous?.kind === "step"
+          && previous.turn === state.turn
+          && previous.step === state.step
+          && previous.key === SMART_KIND
+          && previous.value?.seq === state.seq
+        ) {
+          return previous;
+        }
+        return { kind: "step", turn: state.turn, step: state.step, key: SMART_KIND, value };
+      },
+    };
+
+    /** Whether the turn-data definition has been registered (apply may re-run). */
+    let smartReplyDefinitionRegistered = false;
+
+    /**
+     * The smartReply gate, read per request and per render so the settings
+     * toggle applies to the very next suggestion without a reload. A scope that
+     * has not resolved yet is treated as ON, matching every other gate here.
+     * @returns {boolean} whether suggestions may be requested and shown.
+     */
+    function smartReplyEnabled() {
+      const snap = smartReplyRefs.scope?.getSnapshot?.();
+      return snap?.status === "ready" ? snap.value?.optimizations?.smartReply !== false : true;
+    }
+
+    /** Same-origin suggestion route; read live so a settings edit takes effect. */
+    function smartReplyPath() {
+      const snap = smartReplyRefs.scope?.getSnapshot?.();
+      const path = snap?.status === "ready" ? snap.value?.suggestPath : undefined;
+      return typeof path === "string" && path !== "" ? path : "/api/toolkit/suggest-reply";
+    }
+
+    /** Reply language: the configured pin, else whatever the UI is showing. */
+    function smartReplyLanguage() {
+      const snap = smartReplyRefs.scope?.getSnapshot?.();
+      const pinned = snap?.status === "ready" ? snap.value?.suggestLanguage : "";
+      if (pinned === "zh" || pinned === "en") return pinned;
+      const active = localeFace?.getSnapshot?.()?.active;
+      return active !== undefined && String(active).toLowerCase().startsWith("zh") ? "zh" : "en";
+    }
+
+    /** Suggestions per turn: one in-flight request, the rest coalesced. */
+    const smartReplyCache = new Map();
+
+    /**
+     * Drop every cached suggestion. Called on session switch and on
+     * `connection/reset`, because both invalidate the cache key's session half:
+     * a summary folded for the previous session must never surface as a
+     * suggestion in the next one.
+     */
+    function clearSmartReplyCache() {
+      smartReplyCache.clear();
+      smartReplyLast.set(undefined);
+    }
+
+    /**
+     * Ask the host for candidate replies, at most once per (session, summary).
+     *
+     * Failures resolve to an empty list rather than rejecting: a suggestion is a
+     * convenience, and an unreachable model must never surface as an error in a
+     * composer the user is typing in. The entry is cached either way, so a dead
+     * endpoint costs exactly one request per turn, not one per keystroke.
+     * @param {string} sessionId - the session the summary belongs to.
+     * @param {number} seq - the summary's event seq.
+     * @param {string} summary - the assistant message text.
+     * @returns {Promise<string[]>} the candidates, or [] on any failure.
+     */
+    function fetchSmartReplies(sessionId, seq, summary) {
+      const key = sessionId + "|" + seq;
+      const cached = smartReplyCache.get(key);
+      if (cached !== undefined) return cached;
+      const pending = (async () => {
+        try {
+          const response = await fetch(smartReplyPath(), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ summary, language: smartReplyLanguage() }),
+          });
+          const data = await response.json();
+          if (!data?.ok || !Array.isArray(data.suggestions)) return [];
+          return data.suggestions.filter((item) => typeof item === "string" && item.trim() !== "");
+        } catch (err) {
+          return [];
+        }
+      })();
+      smartReplyCache.set(key, pending);
+      return pending;
+    }
+
+    /**
+     * The composer's ghost layer, aligned to the real textarea.
+     *
+     * Alignment is MEASURED, not guessed: the composer is a Lexical
+     * contenteditable whose padding, font and line height are dsh's own CSS, and
+     * a hand-written approximation drifts the moment that CSS changes. So the
+     * layer copies the textarea's computed geometry and typographic rules, and
+     * is positioned over its box. When the textarea cannot be found (an older
+     * host, or a composer mid-swap) the layer renders nothing at all — dormant,
+     * not broken.
+     */
+    function SmartReplyGhost(props) {
+      const { sessionId, useInput, useSession, inputActions, t } = props;
+      const inputState = typeof useInput === "function" ? useInput((s) => s) : undefined;
+      const sessionState = typeof useSession === "function" ? useSession((s) => s) : undefined;
+      const summary = useSyncExternalStoreSmartReply();
+
+      const draft = inputState?.draft ?? "";
+      const phase = inputState?.phase ?? "plain";
+      // A running turn or an in-flight submission is exactly when a suggestion
+      // would be wrong: the user is mid-conversation, not choosing what to say.
+      const idle = phase === "plain" && sessionState?.running !== true;
+      const showable = idle && draft === "" && smartReplyEnabled();
+
+      const [items, setItems] = useState([]);
+      const [index, setIndex] = useState(0);
+      const hostRef = useRef(null);
+      const [box, setBox] = useState(null);
+
+      // One request per settled summary; a session switch clears the cache, so
+      // the summary of the conversation just left can never be suggested here.
+      const lastSessionRef = useRef(sessionId);
+      useEffect(() => {
+        if (lastSessionRef.current !== sessionId) {
+          lastSessionRef.current = sessionId;
+          clearSmartReplyCache();
+          setItems([]);
+          setIndex(0);
+        }
+      }, [sessionId]);
+      useEffect(() => {
+        if (!smartReplyEnabled()) {
+          setItems([]);
+          return;
+        }
+        const seq = summary?.seq;
+        if (typeof seq !== "number" || seq < 0 || typeof summary?.text !== "string" || summary.text === "") {
+          return;
+        }
+        let live = true;
+        void fetchSmartReplies(sessionId, seq, summary.text).then((list) => {
+          if (live) {
+            setItems(list);
+            setIndex(0);
+          }
+        });
+        return () => { live = false; };
+      }, [sessionId, summary?.seq, summary?.text]);
+
+      // Re-measure on resize and on every reflow that changes the composer's
+      // box. A ResizeObserver on the textarea keeps the ghost on the text even
+      // as the composer grows.
+      useEffect(() => {
+        const host = hostRef.current;
+        if (!host) return;
+        const measure = () => {
+          let node = host;
+          let textarea = null;
+          for (let depth = 0; depth < 8 && node && textarea === null; depth += 1) {
+            textarea = node.querySelector?.("[data-composer-input]") ?? null;
+            node = node.parentElement;
+          }
+          if (!textarea || typeof textarea.getBoundingClientRect !== "function") {
+            setBox(null);
+            return;
+          }
+          const hostRect = host.getBoundingClientRect();
+          const rect = textarea.getBoundingClientRect();
+          const style = globalThis.getComputedStyle?.(textarea);
+          if (!style || hostRect.width === 0) {
+            setBox(null);
+            return;
+          }
+          setBox({
+            top: rect.top - hostRect.top + (parseFloat(style.borderTopWidth) || 0),
+            left: rect.left - hostRect.left + (parseFloat(style.borderLeftWidth) || 0),
+            width: Math.max(rect.width - (parseFloat(style.borderLeftWidth) || 0) - (parseFloat(style.borderRightWidth) || 0), 0),
+            height: Math.max(rect.height - (parseFloat(style.borderTopWidth) || 0) - (parseFloat(style.borderBottomWidth) || 0), 0),
+            padding: style.padding,
+            font: style.font,
+            lineHeight: style.lineHeight,
+            letterSpacing: style.letterSpacing,
+          });
+        };
+        measure();
+        const view = globalThis;
+        if (typeof view.ResizeObserver === "function" && host.parentElement) {
+          const observer = new view.ResizeObserver(measure);
+          observer.observe(host.parentElement);
+          return () => { observer.disconnect(); };
+        }
+        view.addEventListener?.("resize", measure);
+        return () => { view.removeEventListener?.("resize", measure); };
+      }, [draft, items.length]);
+
+      const active = showable && items.length > 0 ? items[Math.min(index, items.length - 1)] : undefined;
+      const accepting = active !== undefined && typeof inputActions?.setDraft === "function";
+
+      /**
+       * Fill the active suggestion into the composer. `setDraft` is the public
+       * input action (the same one voice-input uses), so this writes one undo
+       * step and never touches the editor's internals.
+       */
+      const accept = () => {
+        if (!accepting) return false;
+        inputActions.setDraft(active);
+        return true;
+      };
+
+      // Tab / arrows / Escape, captured at the document because the textarea is
+      // not ours and its own key handling is private. Guarded to the composer
+      // element so no other Tab anywhere on the page is affected, and to the
+      // case where a suggestion is actually showing — with no suggestion, Tab
+      // keeps whatever stock meaning it has.
+      useEffect(() => {
+        if (!accepting) return;
+        const onKeyDown = (event) => {
+          if (event.defaultPrevented) return;
+          if (event.altKey || event.ctrlKey || event.metaKey) return;
+          const target = event.target;
+          if (target instanceof Element && target.closest('[data-composer-input]') === null) return;
+          if (event.key === "Tab") {
+            event.preventDefault();
+            accept();
+          } else if (event.key === "ArrowDown") {
+            event.preventDefault();
+            setIndex((prev) => (items.length > 0 ? (prev + 1) % items.length : 0));
+          } else if (event.key === "ArrowUp") {
+            event.preventDefault();
+            setIndex((prev) => (items.length > 0 ? (prev - 1 + items.length) % items.length : 0));
+          } else if (event.key === "Escape") {
+            setItems([]);
+          }
+        };
+        document.addEventListener("keydown", onKeyDown, true);
+        return () => { document.removeEventListener("keydown", onKeyDown, true); };
+      }, [accepting, active, items.length]);
+
+      /**
+       * Hide the composer's own placeholder while a suggestion is showing.
+       *
+       * The stock placeholder renders as a sibling of the editable surface
+       * (`[data-composer-placeholder]`, aria-hidden) at exactly the position
+       * this ghost occupies — and it is visible precisely when the draft is
+       * empty, which is exactly when the ghost shows. dsh hides it the same way
+       * for IME composing (`.input[data-composer-composing] + .placeholder`),
+       * so this mirrors that mechanism instead of rewriting any of its styles:
+       * one marker attribute on that element, removed again as soon as the
+       * ghost goes away. Nothing of dsh's own state is overwritten.
+       *
+       * Declared BEFORE the early return below — a conditional hook would break
+       * the render when a suggestion appears or disappears mid-turn.
+       */
+      useEffect(() => {
+        const host = hostRef.current;
+        if (!host) return;
+        let node = host;
+        let placeholder = null;
+        for (let depth = 0; depth < 8 && node && placeholder === null; depth += 1) {
+          placeholder = node.querySelector?.("[data-composer-placeholder]") ?? null;
+          node = node.parentElement;
+        }
+        if (!placeholder) return;
+        if (active === undefined) placeholder.removeAttribute("data-toolkit-smart-hidden");
+        else placeholder.setAttribute("data-toolkit-smart-hidden", "");
+        return () => { placeholder.removeAttribute("data-toolkit-smart-hidden"); };
+      }, [active, box]);
+
+      if (!showable) return null;
+
+      return jsxs("div", {
+        "data-toolkit-smart-reply": "ghost",
+        ref: hostRef,
+        style: {
+          position: "absolute",
+          inset: 0,
+          pointerEvents: "none",
+          zIndex: 0,
+        },
+        children: active === undefined
+          ? null
+          : jsxs("div", {
+            "data-toolkit-smart-reply": "text",
+            style: {
+              position: "absolute",
+              top: box?.top ?? 0,
+              left: box?.left ?? 0,
+              width: box?.width ?? 0,
+              minHeight: box?.height ?? 0,
+              boxSizing: "border-box",
+              padding: box?.padding ?? 0,
+              font: box?.font,
+              lineHeight: box?.lineHeight,
+              letterSpacing: box?.letterSpacing,
+              whiteSpace: "pre-wrap",
+              overflowWrap: "anywhere",
+              color: "var(--dsw-alias-label-tertiary, #9ca3af)",
+              opacity: 0.75,
+              overflow: "hidden",
+            },
+            children: [
+              active,
+              items.length > 1
+                ? jsx("span", {
+                  "data-toolkit-smart-reply": "hint",
+                  style: { marginLeft: "8px", fontSize: "11px", opacity: 0.8, whiteSpace: "nowrap" },
+                  children: t
+                    ? t("hint", { tab: index + 1, total: items.length })
+                    : `Tab 填入 · ${index + 1}/${items.length}`,
+                })
+                : null,
+            ],
+          }),
+      });
+    }
+
+    /**
+     * Subscribe a component to the last-summary store. A tiny local hook rather
+     * than a package import: the store is a two-field value, and this keeps the
+     * client bundle free of another react-state dependency for it.
+     * @returns {{seq: number, turn: number, text: string} | undefined} the summary.
+     */
+    function useSyncExternalStoreSmartReply() {
+      const [value, setValue] = useState(smartReplyLast.getSnapshot());
+      useEffect(() => {
+        const unsubscribe = smartReplyLast.subscribe(() => { setValue(smartReplyLast.getSnapshot()); });
+        return () => { unsubscribe?.(); };
+      }, []);
+      return value;
+    }
+
     /** Optimizations surfaced by the settings card, in display order. */
     const OPTIMIZATIONS = [
       {
@@ -2007,6 +2468,13 @@ window.__ModuleLoader__.load({
         shortKey: "optModelsShort",
         descKey: "optModelsDesc",
         icon: IconGaugeOutline16,
+      },
+      {
+        key: "smartReply",
+        titleKey: "optReplyTitle",
+        shortKey: "optReplyShort",
+        descKey: "optReplyDesc",
+        icon: IconSparklesOutline16,
       },
     ];
 
@@ -3315,7 +3783,7 @@ window.__ModuleLoader__.load({
      * as the optimization list grows.
      */
     function ToolkitSettingsCard(props) {
-      const { t, useToolkitSettings, toolkitSet, toolkitMutate, toolkitModels } = props;
+      const { t, useToolkitSettings, toolkitSet, toolkitMutate, toolkitModels, toolkitSuggestOptions } = props;
       // Called unconditionally: a hook inside a conditional expression is a
       // rules-of-hooks violation, and the `props.scope` fallback the old
       // ternary carried was unreachable anyway — `inject` only ever passes the
@@ -3429,6 +3897,7 @@ window.__ModuleLoader__.load({
         // refs so a re-created `t` identity cannot re-trigger the fetch, while
         // the closure still sees their latest values.
       }, [modalOpt]);
+
 
       const write = async (field, next) => {
         setSaving(true);
@@ -3797,11 +4266,187 @@ window.__ModuleLoader__.load({
         ],
       });
 
+      /** smartReply fields: which model, how many candidates, and the deadline. */
+      const [replyDraft, setReplyDraft] = useState({});
+      const [replyDirty, setReplyDirty] = useState(false);
+      const [replyOptions, setReplyOptions] = useState(null);
+      const [replyOptionsLoading, setReplyOptionsLoading] = useState(false);
+      const [replyModelOptions, setReplyModelOptions] = useState(null);
+      const [replyModelQuery, setReplyModelQuery] = useState("");
+      const [replyPickerOpen, setReplyPickerOpen] = useState(false);
+
+      // Load suggest options (routes + models) when the smartReply dialog opens,
+      // and reload the model list whenever the selected route changes — the
+      // two pickers are linked: models belong to the route you picked.
+      useEffect(() => {
+        if (modalOpt !== "smartReply") {
+          setReplyOptions(null);
+          setReplyModelOptions(null);
+          setReplyOptionsLoading(false);
+          return undefined;
+        }
+        let cancelled = false;
+        setReplyOptionsLoading(true);
+        void (async () => {
+          try {
+            if (typeof toolkitSuggestOptions !== "function") { if (!cancelled) { setReplyOptions([]); setReplyModelOptions([]); setReplyOptionsLoading(false); } return; }
+            const result = await toolkitSuggestOptions(replyDraft.suggestRouteKey || "");
+            if (cancelled) return;
+            setReplyOptions(Array.isArray(result?.routes) ? result.routes : []);
+            setReplyModelOptions(Array.isArray(result?.models) ? result.models : []);
+          } catch {
+            if (!cancelled) { setReplyOptions([]); setReplyModelOptions([]); }
+          } finally {
+            if (!cancelled) setReplyOptionsLoading(false);
+          }
+        })();
+        return () => { cancelled = true; };
+      }, [modalOpt, replyDraft.suggestRouteKey]);
+      const replySet = (key, next) => {
+        setReplyDraft((current) => ({ ...current, [key]: next }));
+        setReplyDirty(true);
+      };
+
+      // The live section wins until the user edits, then the draft is authoritative.
+      useEffect(() => {
+        if (replyDirty) return;
+        setReplyDraft({
+          suggestModel: typeof value.suggestModel === "string" ? value.suggestModel : "",
+          suggestRouteKey: typeof value.suggestRouteKey === "string" ? value.suggestRouteKey : "",
+          suggestCount: Number.isInteger(value.suggestCount) ? String(value.suggestCount) : "3",
+          suggestTimeoutSec: Number.isFinite(value.suggestTimeoutSec) ? String(value.suggestTimeoutSec) : "12",
+        });
+      }, [value.suggestModel, value.suggestRouteKey, value.suggestCount, value.suggestTimeoutSec, replyDirty]);
+
+      /** Persist only the smartReply fields the user actually changed. */
+      const saveReply = () => {
+        setReplyDirty(false);
+        void (async () => {
+          setSaving(true);
+          setError(null);
+          const count = Number.parseInt(replyDraft.suggestCount, 10);
+          const timeout = Number.parseFloat(replyDraft.suggestTimeoutSec);
+          const next = {
+            suggestModel: (replyDraft.suggestModel ?? "").trim(),
+            suggestRouteKey: (replyDraft.suggestRouteKey ?? "").trim(),
+            // An unparseable number falls back to the live value rather than
+            // writing NaN into a settings document.
+            suggestCount: Number.isInteger(count) && count > 0 ? Math.min(count, 5) : (value.suggestCount ?? 3),
+            suggestTimeoutSec: Number.isFinite(timeout) && timeout > 0 ? timeout : (value.suggestTimeoutSec ?? 12),
+          };
+          try {
+            const ops = Object.entries(next)
+              .filter(([key, entry]) => entry !== (value[key] ?? undefined))
+              .map(([key, entry]) => ({ op: "set", path: [key], value: entry }));
+            if (ops.length > 0) {
+              if (typeof toolkitMutate === "function") await toolkitMutate(ops);
+              else for (const op of ops) await toolkitSet(op.path[0], op.value);
+            }
+            setSavedTick(true);
+          } catch (cause) {
+            setError(cause?.message ?? String(cause));
+            // Keep the draft dirty: the edit did not land, and clearing the flag
+            // here made the next snapshot overwrite it.
+            return;
+          } finally {
+            setSaving(false);
+          }
+          setReplyDirty(false);
+        })();
+      };
+
+      const smartReplyGroup = jsxs("div", {
+        style: {
+          display: "flex", flexDirection: "column", gap: "10px",
+          padding: "10px 16px 14px",
+          borderTop: "1px solid var(--dsw-alias-border-l2, #333)",
+        },
+        children: [
+          jsx("span", { style: modelsHintStyle, children: t("smartReplyKeyHint") }),
+          // Route: native <select> — a finite list, no search needed.
+          jsxs("label", {
+            style: { display: "flex", flexDirection: "column", gap: "3px" },
+            children: [
+              jsx("span", { style: modelsLabelStyle, children: t("smartReplyRouteLabel") }),
+              jsx("select", {
+                disabled: !writable || saving || replyOptionsLoading,
+                value: replyDraft.suggestRouteKey ?? "",
+                onChange: (event) => { replySet("suggestRouteKey", event.target.value); },
+                style: {
+                  ...modelsInputStyle,
+                  opacity: writable && !saving ? 1 : 0.5,
+                  cursor: "pointer",
+                },
+                children: [
+                  jsx("option", { value: "", children: t("smartReplyRouteDefault", { route: value.modelsRouteKey || "opencode-go" }) }),
+                  ...(replyOptions ?? []).map((r) => jsx("option", {
+                    value: r.id,
+                    children: r.name && r.name !== r.id ? `${r.id} — ${r.name}` : r.id,
+                  }, r.id)),
+                ],
+              }),
+              jsx("span", {
+                style: modelsHintStyle,
+                children: t("smartReplyRouteHint", { route: value.modelsRouteKey || "opencode-go" }),
+              }),
+            ],
+          }),
+          // Model: reuse the existing searchable picker, single-select semantics.
+          jsx(ModelIdPicker, {
+            t,
+            label: t("smartReplyKeyLabel"),
+            hint: t("smartReplyKeyPlaceholder"),
+            values: replyDraft.suggestModel ? [replyDraft.suggestModel] : [],
+            options: replyModelOptions,
+            optionsError: null,
+            disabled: !writable || saving,
+            query: replyModelQuery,
+            onQuery: setReplyModelQuery,
+            open: replyPickerOpen,
+            onOpen: setReplyPickerOpen,
+            onAdd: (id) => replySet("suggestModel", id),
+            onRemove: () => replySet("suggestModel", ""),
+          }),
+          modelsField(t("smartReplyCountLabel"), undefined, {
+            type: "number",
+            min: 1,
+            max: 5,
+            value: replyDraft.suggestCount ?? "",
+            onChange: (event) => { replySet("suggestCount", event.target.value); },
+          }),
+          modelsField(t("smartReplyTimeoutLabel"), undefined, {
+            type: "number",
+            min: 1,
+            step: 1,
+            value: replyDraft.suggestTimeoutSec ?? "",
+            onChange: (event) => { replySet("suggestTimeoutSec", event.target.value); },
+          }),
+          jsx("button", {
+            type: "button",
+            onClick: saveReply,
+            disabled: !writable || !replyDirty || saving,
+            style: {
+              alignSelf: "flex-start",
+              padding: "5px 14px",
+              fontSize: "12.5px",
+              borderRadius: "6px",
+              border: "1px solid var(--dsw-alias-border-l2, #333)",
+              background: "transparent",
+              color: "inherit",
+              cursor: !writable || !replyDirty || saving ? "default" : "pointer",
+              opacity: writable && replyDirty && !saving ? 1 : 0.5,
+            },
+            children: t("modelsSave"),
+          }),
+        ],
+      });
+
       /** One optimization's modal body: its switch plus option-specific fields. */
       const settingsFor = (opt) => [
         switchRow(opt),
         ...(opt.key === "workspacelessChat" ? [chatPathGroup] : []),
         ...(opt.key === "modelCapability" ? [modelsGroup] : []),
+        ...(opt.key === "smartReply" ? [smartReplyGroup] : []),
         ...(opt.key === "slashI18n" ? [jsx(SlashI18nManager, { t, writable, onClose: () => setModalOpt(null) })] : []),
         ...(error !== null ? [jsx("div", {
           style: {
@@ -4315,6 +4960,13 @@ window.__ModuleLoader__.load({
           background: var(--dsw-alias-label-tertiary, #6b7280);
           opacity: 0.5;
         }
+        /* smartReply: the stock composer placeholder and the suggestion ghost
+           occupy the same box, so the placeholder steps aside while a ghost is
+           showing. Visibility (not display) keeps its own layout box intact —
+           the same mechanism dsh uses for IME composing. */
+        [data-toolkit-smart-hidden] {
+          visibility: hidden !important;
+        }
       `;
       (document.head || document.documentElement).appendChild(style);
     }
@@ -4441,7 +5093,41 @@ window.__ModuleLoader__.load({
           // one can never settle again.
           reportRootCallTurns.clear();
           if (changeReportCapabilityRequested) load();
+          // smartReply: a reconnect invalidates both the transcript-derived
+          // summary and every cached suggestion keyed by it.
+          clearSmartReplyCache();
         });
+
+        // smartReply: gray ghost text over the composer carrying a suggested
+        // reply, Tab to fill it. The accumulator is state-only (no view
+        // target), so the transcript is untouched; the overlay entry renders
+        // nothing at all unless a suggestion is actually showing, and the whole
+        // feature stays dormant when the toggle is off or the call fails.
+        //
+        // This lives INSIDE the uiConversation inject on purpose: `services` is
+        // callback-scoped, and the summary definition needs the conversation
+        // service's event registry to fold assistant settlements at all.
+        if (!smartReplyDefinitionRegistered) {
+          smartReplyDefinitionRegistered = true;
+          services.uiConversation.events.register(smartReplySummaryDefinition);
+        }
+      });
+
+      // The scope is plugin-scoped rather than service-scoped: the overlay slot
+      // is injected on the outer ctx and re-reads it at use time.
+      smartReplyRefs.scope = scope;
+      ctx.slots.inject("conversation.input.overlay", function* () {
+        const registration = safeSlotRegister(ctx,
+          {
+            name: "conversation.input.overlay",
+            id: "dsh-plugin-toolkit-smart-reply",
+            order: 50,
+            locale: NS,
+            registrant: "dsh-plugin-toolkit",
+          },
+          SmartReplyGhost,
+        );
+        if (registration !== undefined) yield registration;
       });
       ctx.slots.inject("conversation.chat.turnTail", function* () {
         const registration = safeSlotRegister(ctx,
@@ -4527,6 +5213,19 @@ window.__ModuleLoader__.load({
               ? configured
               : MODELS_PATH;
             const response = await fetch(path);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            return response.json();
+          },
+          toolkitSuggestOptions: async (route) => {
+            // Routes and models for the smartReply pickers. The options path is
+            // configurable server-side (suggestOptionsPath); read it live.
+            const snap = scope.getSnapshot?.();
+            const configured = snap?.status === "ready" ? snap.value?.suggestOptionsPath : undefined;
+            const base = typeof configured === "string" && configured !== ""
+              ? configured
+              : "/api/toolkit/suggest-options";
+            const url = base + (route ? `?route=${encodeURIComponent(route)}` : "");
+            const response = await fetch(url);
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             return response.json();
           },

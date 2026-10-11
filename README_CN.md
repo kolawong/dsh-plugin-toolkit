@@ -24,6 +24,7 @@
   - [`changeReport`](#changereport)
   - [`opencodeSession`](#opencodesession)
   - [`modelCapability`](#modelcapability)
+  - [`smartReply`](#smartreply)
 - [配置总览](#配置总览)
 - [开发](#开发)
 - [毕业规则](#毕业规则)
@@ -41,6 +42,7 @@
 | 5 | [`changeReport`](#changereport) | 回合尾部 codex 风格的改动报告卡片 | 开 | 客户端 |
 | 6 | [`opencodeSession`](#opencodesession) | 为 OpenCode Go/Zen 请求补上稳定的 `x-opencode-session` | 开 | 服务端 |
 | 7 | [`modelCapability`](#modelcapability) | 保持某条 llm-pi-ai 路由的模型清单、容量与图像能力最新 | 开 | 服务端 + 客户端 |
+| 8 | [`smartReply`](#smartreply) | 输入框灰字显示建议回复，Tab 填入 | 开 | 客户端 + 服务端 |
 
 ## 安装（web profile）
 
@@ -63,9 +65,10 @@ systemctl restart deepseek-harness.service  # 或你的 profile 重启方式
 
 | 半边 | 文件 | 职责 | 使用的扩展面 |
 |---|---|---|---|
-| 客户端 | `client.js` | 设置卡片、内联编辑 UI、侧栏重排、「/」菜单改写、改动报告卡片、模型 id 选择器 | 客户端模块表、会话节点/回合尾部槽位、`remote.*` 命名空间包装、settings scope |
+| 客户端 | `client.js` | 设置卡片、内联编辑 UI、侧栏重排、「/」菜单改写、改动报告卡片、输入框灰字建议回复、模型 id 选择器 | 客户端模块表、会话节点/回合尾部槽位、`conversation.input.overlay`、`inputActions`、`remote.*` 命名空间包装、settings scope |
 | 服务端 | `index.js` | 设置 schema 与默认值、默认对话工作区目录、OpenCode 会话头 | `settings`、`llm/stream`、`globalThis.fetch` |
-| 服务端 | `model-sync.js` + `models-core.js` | 模型发现包装、同步/清单路由、容量与模态补全 | `llm` 模型发现、`webServer` 路由、settings 存储 |
+| 服务端 | `model-sync.js` + `models-core.js` | 模型发现包装、同步/清单路由、容量与模态补全，以及 smartReply 复用的端点/凭据解析器 | `llm` 模型发现、`webServer` 路由、settings 存储 |
+| 服务端 | `suggest-api.js` + `suggest-core.js` | 建议回复路由，及其背后的纯 prompt 构造 / JSON 抢救逻辑 | `webServer` 路由、`model-sync` 解析器 |
 
 全包一致的设计原则：
 
@@ -77,7 +80,7 @@ systemctl restart deepseek-harness.service  # 或你的 profile 重启方式
 ## 设置卡片
 
 <p align="center">
-  <img src="docs/assets/settings-card.svg" alt="DSH-Toolkit 设置卡片：七个半宽优化子卡片，各有图标、标题、标识与开关徽标" width="100%">
+  <img src="docs/assets/settings-card.svg" alt="DSH-Toolkit 设置卡片：八个半宽优化子卡片，各有图标、标题、标识与开关徽标" width="100%">
 </p>
 
 卡片为每个优化渲染一张子卡片，带实时开关徽标，以及「全部启用 / 全部关闭」两个快捷按钮。打开子卡片会显示该优化自己的说明与字段（例如默认对话目录，或模型能力的 Key 与选择器）。
@@ -231,6 +234,34 @@ OpenCode Go 现在会 400 拒绝缺少 `x-opencode-session` 的请求（`{"type"
 
 > 说明：本项含服务端路由与独立配置字段，按下面的「毕业规则」已达到可拆出的体量；当前有意保留在 Toolkit 内，作为编号优化项统一管理。
 
+### `smartReply`
+
+在**输入框里**用灰色幽灵字显示一条「你接下来可能说的话」，按 **Tab** 填入。一轮回答结束后，把最后一条 AI 回复交给一个小模型起草若干条候选，第一条直接显示在输入框内，`↑`/`↓` 切换其余候选，`Esc` 取消，`Tab` 填入当前这条。
+
+<p align="center">
+  <img src="docs/assets/flow-smart-reply.svg" alt="已结算的 AI 消息进入总结；建议路由复用模型能力的端点与密钥解析取回候选；灰字按实测对齐叠在输入框上，Tab 通过 setDraft 接受" width="100%">
+</p>
+
+做法与边界：
+
+- **只在真正有用的时刻出现。** 只有输入框为空**且**本轮空闲时才渲染——绝不盖在提交过程中，也绝不盖在你已经打了一半的字上；打一个字符就立刻消失。
+- **对齐是实测的，不是猜的。** 输入框是 Lexical 的 contenteditable，内边距、字号、行高、字距都是 dsh 自己的 CSS。灰字层直接**复制 textarea 的 computed 几何与排版**，并定位到它实测出的盒子上，所以 dsh 改 CSS 也不会错位。灰字显示期间，输入框自带的 placeholder 会按 dsh 处理输入法组合态的同一套机制让位——只加一个标记属性，灰字消失即刻撤销。
+- **接受走公开接口。** `Tab` 通过会话服务的 `inputActions.setDraft`（voice-input 用的同一个动作）写入，只占一个撤销步，不碰编辑器内部。`Tab` 只在输入框聚焦**且**有候选时才会被拦截，页面上其它 `Tab` 语义不变。
+- **每轮一次调用**，按 (会话, 总结) 缓存。失败也缓存成「无建议」，所以端点挂掉时每轮只多一次请求，而不是每敲一个键一次。切换会话或断线重连会清空缓存，上一段对话的总结不可能出现在下一段里。
+- **端点解析复用 modelCapability 自己的解析器。** `resolveRouteEndpoint` / `resolveRouteApiKey` 正是为此从 `model-sync.js` 导出的，所以建议走的就是你 profile 已配置好的那条 provider。调用**宁可放弃也不猜**：解析不出端点、拿不到凭据、路由不是 `openai-completions`、没有模型 id —— 一律不给建议，而不是发出一个注定失败的请求。
+- **对话记录不受影响。** 累积器是一个没有 view target 的纯状态型会话定义，本身不渲染任何东西，原版助手气泡行为完全不变。
+- 与本包其它优化一样非侵入：只用公开插槽与公开输入动作，不改 dsh 源码。
+
+| 配置 | 默认 | 含义 |
+|---|---|---|
+| `optimizations.smartReply` | `true` | 灰字提示与建议调用的总开关。 |
+| `suggestRouteKey` | `""` → `modelsRouteKey` | 建议调用使用的 llm-pi-ai 路由；留空复用「模型能力」的主路由。 |
+| `suggestModel` | `""` | 起草候选的模型；留空则调用时取该路由目录里的第一个 id。每轮都会调用，建议填便宜、快的小模型。 |
+| `suggestPath` | `/api/toolkit/suggest-reply` | 客户端 POST 的同源路由（只注册一次，改动需重启）。 |
+| `suggestLanguage` | `""` | 回复语言锁定；留空则每次请求跟随界面语言。 |
+| `suggestCount` | `3` | 每轮保留的候选条数。 |
+| `suggestTimeoutSec` | `12` | 单次请求总超时（秒，覆盖响应头**与**响应体）。 |
+
 ## 配置总览
 
 所有字段都在 `toolkit` settings 命名空间。组合默认值声明在 `cordis.patch.yml`，schema 在 `index.js`，公开类型在 `index.d.ts`。
@@ -244,6 +275,7 @@ OpenCode Go 现在会 400 拒绝缺少 `x-opencode-session` 的请求（`{"type"
 | `optimizations.changeReport` | boolean | `true` | changeReport |
 | `optimizations.opencodeSession` | boolean | `true` | opencodeSession |
 | `optimizations.modelCapability` | boolean | `true` | modelCapability |
+| `optimizations.smartReply` | boolean | `true` | smartReply |
 | `modelsMigratedFromQuotaBadges` | boolean | `false` | modelCapability —— 内部单向标记，在采纳原 quota-badges 模型设置后自动置位；请勿手工设置。 |
 | `chatWorkspacePath` | string | `""` → `<DSH_HOME>/chat` | workspacelessChat |
 | `chatWorkspaceTitle` | string | `通用对话` | workspacelessChat |
@@ -261,6 +293,12 @@ OpenCode Go 现在会 400 拒绝缺少 `x-opencode-session` 的请求（`{"type"
 | `modelsVision` | string[] | `[]` | modelCapability |
 | `modelsTextOnly` | string[] | `[]` | modelCapability |
 | `modelsTimeoutSec` | number | `10` | modelCapability |
+| `suggestRouteKey` | string | `""` | smartReply —— 留空复用 `modelsRouteKey` |
+| `suggestModel` | string | `""` | smartReply —— 留空则用该路由目录的第一个模型 id |
+| `suggestPath` | string | `/api/toolkit/suggest-reply` | smartReply |
+| `suggestLanguage` | string | `""` | smartReply —— `""` 表示跟随界面语言 |
+| `suggestCount` | number | `3` | smartReply |
+| `suggestTimeoutSec` | number | `12` | smartReply |
 
 ## 开发
 
@@ -290,8 +328,9 @@ cd /root/deepseek-harness && node /root/dsh-plugin-toolkit/scripts/smoke.mjs
 | 路径 | 内容 |
 |---|---|
 | `index.js` / `index.d.ts` | 服务端半边：settings 命名空间、对话目录、OpenCode fetch 包装。 |
-| `model-sync.js` | 服务端半边：发现包装、同步/清单路由、补全与迁移。 |
+| `model-sync.js` | 服务端半边：发现包装、同步/清单路由、补全与迁移；同时导出 smartReply 复用的端点/凭据解析器。 |
 | `models-core.js` | 纯合并/补全/diff 辅助函数（无网络、无 settings 访问）。 |
+| `suggest-api.js` / `suggest-core.js` | 服务端半边：建议回复路由，及其背后的纯 prompt 构造 / JSON 抢救逻辑。 |
 | `client.js` | 浏览器半边：设置卡片与全部客户端优化。 |
 | `cordis.patch.yml` | 注入 dsh bundle patch 的组合默认值。 |
 | `tests/` | 单元测试：纯核心、同步路由、设置卡片，以及 `index.js`（fetch 包装 + `llm/stream` 会话链）。 |

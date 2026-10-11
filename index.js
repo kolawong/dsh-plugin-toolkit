@@ -48,6 +48,16 @@
  *     (modelsApiKey / modelsApiKeyEnvVar); the former quota-badges values are
  *     adopted once at startup.
  *
+ *  8. smartReply - a suggested reply shown as gray ghost text inside the
+ *     composer, filled with Tab. suggest-api.js mounts POST <suggestPath>,
+ *     which resolves its route and credential through model-sync's OWN
+ *     resolvers (exported for exactly this) so the call reaches whatever
+ *     provider the profile is configured for and never guesses a URL or probes
+ *     into a guaranteed 401. suggest-core.js holds the pure prompt-building and
+ *     JSON-salvage logic. client.js folds the last settled assistant message and
+ *     renders the ghost; accepting a suggestion goes through the conversation
+ *     service's own `inputActions.setDraft`.
+ *
  * @license MIT
  */
 
@@ -59,6 +69,7 @@ import { join } from "node:path";
 import z from "@deepseek-ai/schemastery";
 import { installModelCapability, rehealModelCapability } from "./model-sync.js";
 import { installSlashI18nApi } from "./slash-i18n-api.js";
+import { installSmartReply } from "./suggest-api.js";
 
 /**
  * Re-exported so the `GET /api/toolkit/models` answer is reachable from the
@@ -110,7 +121,8 @@ export const Config = z.object({
     changeReport: z.boolean().default(true),
     opencodeSession: z.boolean().default(true),
     modelCapability: z.boolean().default(true),
-  }).default({ workspacelessChat: true, editLastMessage: true, viewActivity: true, slashI18n: true, changeReport: true, opencodeSession: true, modelCapability: true }),
+    smartReply: z.boolean().default(true),
+  }).default({ workspacelessChat: true, editLastMessage: true, viewActivity: true, slashI18n: true, changeReport: true, opencodeSession: true, modelCapability: true, smartReply: true }),
   /**
    * Host-side directory the default chat workspace registers. Empty resolves
    * to <DSH_HOME>/chat; resolved before registration so the client always
@@ -172,6 +184,32 @@ export const Config = z.object({
   modelsTextOnly: z.array(z.string()).default([]),
   /** Per-request upstream timeout in seconds for the probe and the registry. */
   modelsTimeoutSec: z.number().default(10),
+  /**
+   * llm-pi-ai route the smartReply suggestion call uses. Empty falls back to
+   * the modelCapability primary route (modelsRouteKey), so a profile that
+   * already fetches models needs no extra configuration to get suggestions.
+   */
+  suggestRouteKey: z.string().default(""),
+  /**
+   * Model asked to draft the candidate replies. Empty resolves at call time to
+   * the route's own first catalog id. A cheap, fast model is the right choice
+   * here: this call runs on every settled turn.
+   */
+  suggestModel: z.string().default(""),
+  /** Same-origin route the client POSTs a suggestion request to. */
+  suggestPath: z.string().default("/api/toolkit/suggest-reply"),
+  /** Same-origin route listing the routes and models the pickers offer (GET). */
+  suggestOptionsPath: z.string().default("/api/toolkit/suggest-options"),
+  /**
+   * Reply-language pin; "" lets each request follow the UI language. Kept a
+   * plain string because this schemastery build has no `z.literal` — the
+   * ""-or-"zh"-or-"en" rule is enforced where it is read, in `suggestConfig`.
+   */
+  suggestLanguage: z.string().default(""),
+  /** Candidate replies kept per turn. */
+  suggestCount: z.number().default(3),
+  /** Total per-request deadline in seconds for the suggestion call. */
+  suggestTimeoutSec: z.number().default(30),
   /** One-time marker: the former quota-badges model settings were adopted here. */
   modelsMigratedFromQuotaBadges: z.boolean().default(false),
 });
@@ -387,6 +425,16 @@ export function apply(ctx, config) {
     installSlashI18nApi(ctx, logger);
   } catch (error) {
     logger?.warn?.("[toolkit] slashI18n API install:", error);
+  }
+
+  // smartReply: the POST suggest-reply route. It reuses model-sync's endpoint
+  // and credential resolution, so it mounts independently of the discovery
+  // wrap and stays dormant (never registered) on a host without the
+  // webServer seam instead of failing the whole toolkit.
+  try {
+    installSmartReply(ctx, currentConfig);
+  } catch (error) {
+    logger?.warn?.("[toolkit] smartReply route install:", error);
   }
 
   ctx.inject(["settings"], (sctx) => {
