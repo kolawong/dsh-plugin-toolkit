@@ -230,6 +230,7 @@ export async function requestSuggestions(ctx, config, summary, language, fetchIm
     throw error;
   }
   const body = buildSuggestRequest({ model, summary, language, count: config.count });
+  console.log("[suggest-api] calling:", joinUrl(endpoint.baseURL, "chat/completions"), "model:", model);
   const reply = await postCompletion(
     fetchImpl,
     joinUrl(endpoint.baseURL, "chat/completions"),

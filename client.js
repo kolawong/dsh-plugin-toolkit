@@ -2167,6 +2167,7 @@ window.__ModuleLoader__.load({
             body: JSON.stringify({ summary, language: smartReplyLanguage() }),
           });
           const data = await response.json();
+          console.log("[smartReply] fetch result:", JSON.stringify(data)?.slice(0, 200));
           if (!data?.ok || !Array.isArray(data.suggestions)) return [];
           return data.suggestions.filter((item) => typeof item === "string" && item.trim() !== "");
         } catch (err) {
@@ -2193,6 +2194,7 @@ window.__ModuleLoader__.load({
       const inputState = typeof useInput === "function" ? useInput((s) => s) : undefined;
       const sessionState = typeof useSession === "function" ? useSession((s) => s) : undefined;
       const summary = useSyncExternalStoreSmartReply();
+      console.log("[smartReply] ghost render:", { summary: summary?.text?.slice(0, 30), enabled: smartReplyEnabled() });
 
       const draft = inputState?.draft ?? "";
       const phase = inputState?.phase ?? "plain";

@@ -26,8 +26,16 @@ export const MAX_SUMMARY_CHARS = 4000;
 export const MAX_SUGGESTION_CHARS = 200;
 
 /** Reply-token ceiling for the suggestion call. Cheap, fast models are the
- *  point here — this must never cost more than a fraction of the real turn. */
-export const MAX_SUGGEST_TOKENS = 500;
+ *  point here — this must never cost more than a fraction of the real turn.
+ *
+ *  2000, not 500: a reasoning model spends this budget on its reasoning before
+ *  it emits any content. Measured on cline-pass/glm-5.3-flash (2026-10-12), the
+ *  reasoning run is 1300-2400 characters, so a 500 ceiling was exhausted before
+ *  the first content token about one call in three, and api.cline.bot answers
+ *  an empty completion with HTTP 500 `empty response content` — which the
+ *  client renders as "no ghost text". At 2000 the same prompts returned content
+ *  every time, while a non-reasoning model still stops well short of it. */
+export const MAX_SUGGEST_TOKENS = 2000;
 
 /** Suggested replies kept per turn; the rest are dropped. */
 export const DEFAULT_SUGGEST_COUNT = 3;

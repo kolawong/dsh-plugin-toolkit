@@ -11,6 +11,7 @@ import {
   parseSuggestions,
   extractCompletionText,
   MAX_SUGGESTION_CHARS,
+  MAX_SUGGEST_TOKENS,
 } from "../suggest-core.js";
 
 test("tailSummary: passes short text through, trimmed", () => {
@@ -64,7 +65,8 @@ test("buildSuggestRequest: an OpenAI-shaped, non-streaming body", () => {
   const body = buildSuggestRequest({ model: "cheap-1", summary: "总结", language: "zh", count: 2 });
   assert.equal(body.model, "cheap-1");
   
-  assert.equal(body.max_tokens, 500);
+  assert.equal(body.max_tokens, MAX_SUGGEST_TOKENS);
+  assert.ok(MAX_SUGGEST_TOKENS >= 2000, "a reasoning model must not exhaust the budget before emitting content");
   assert.equal(typeof body.temperature, "number");
   assert.equal(body.messages.length, 2);
 });
