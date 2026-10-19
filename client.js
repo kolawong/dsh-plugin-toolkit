@@ -237,6 +237,12 @@ window.__ModuleLoader__.load({
       smartReplyRouteDefault: "默认（{route}）",
       smartReplyLanguageLabel: "回复语言",
       smartReplyTimeoutLabel: "超时（秒）",
+      smartReplyLearnLabel: "学习我的表达习惯",
+      smartReplyLearnHint:
+        "状态文件只留在本机；一小段聚合风格提示（最多 2 条示例）会随建议请求发给你配置的建议模型。可随时关闭。",
+      smartReplyHabitStats: "已从 {turns} 轮对话学习表达习惯，接受过 {accepted} 条建议",
+      smartReplyRuntimeHint: "建议调用走 DSH 运行时，任何已配置路由（包括 anthropic-messages）都可使用。",
+      smartReplyRouteWarning: "该路由不能用于建议调用，请改选可用路由。",
       hint: "Tab 填入 · {tab}/{total}",
       modelsKeyLabel: "OpenCode API Key",
       modelsKeyPlaceholder: "粘贴 opencode.ai 的 API Key",
@@ -378,6 +384,12 @@ window.__ModuleLoader__.load({
       smartReplyRouteDefault: "Default ({route})",
       smartReplyLanguageLabel: "Reply language",
       smartReplyTimeoutLabel: "Timeout (seconds)",
+      smartReplyLearnLabel: "Learn my phrasing",
+      smartReplyLearnHint:
+        "The state file stays on this machine; a short aggregate style hint (up to 2 examples) rides in the suggestion request sent to your configured suggestion model. Turn it off anytime.",
+      smartReplyHabitStats: "Learned your phrasing from {turns} turns; {accepted} accepted suggestions so far",
+      smartReplyRuntimeHint: "Suggestions go through the DSH runtime, so any configured route works — including anthropic-messages.",
+      smartReplyRouteWarning: "This route cannot serve suggestion calls; pick a usable route.",
       hint: "Tab to fill · {tab}/{total}",
       modelsKeyLabel: "OpenCode API key",
       modelsKeyPlaceholder: "Paste your opencode.ai API key",
@@ -2133,6 +2145,32 @@ window.__ModuleLoader__.load({
     const smartReplyCache = new Map();
 
     /**
+     * Suggestions the user accepted with Tab that the host has not seen yet.
+     *
+     * The host learns the user's phrasing from these, so they ride along on the
+     * NEXT request body rather than firing a request of their own. The list is
+     * deduped and capped: a burst of accepts must not grow the payload without
+     * bound. It is cleared only once a request actually lands (`response.ok`
+     * with `data.ok`), so a failed call never silently drops the learning
+     * signal; the next settled summary carries it again.
+     */
+    const SMART_REPLY_ACCEPTED_CAP = 3;
+    const smartReplyAccepted = [];
+
+    /**
+     * Record one accepted suggestion for the next request body.
+     * @param {string} text - the suggestion the user just accepted.
+     * @returns {void}
+     */
+    function rememberAcceptedSuggestion(text) {
+      if (typeof text !== "string") return;
+      const value = text.trim();
+      if (value === "" || smartReplyAccepted.includes(value)) return;
+      smartReplyAccepted.push(value);
+      while (smartReplyAccepted.length > SMART_REPLY_ACCEPTED_CAP) smartReplyAccepted.shift();
+    }
+
+    /**
      * Drop every cached suggestion. Called on session switch and on
      * `connection/reset`, because both invalidate the cache key's session half:
      * a summary folded for the previous session must never surface as a
@@ -2161,13 +2199,36 @@ window.__ModuleLoader__.load({
       if (cached !== undefined) return cached;
       const pending = (async () => {
         try {
+          // Snapshot once so the body and the post-success cleanup refer to the
+          // SAME set. A Tab-accept that lands while this request is in flight
+          // is not in the snapshot and must survive the clear, otherwise that
+          // learning signal would be silently dropped.
+          const sentAccepted = smartReplyAccepted.slice();
           const response = await fetch(smartReplyPath(), {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ summary, language: smartReplyLanguage() }),
+            body: JSON.stringify({
+              summary,
+              language: smartReplyLanguage(),
+              // Both are optional on an older host: a session it does not know
+              // simply yields no extra context, and an unsupported `accepted`
+              // field is ignored. They are only meaningful to a host that
+              // persists habit statistics.
+              sessionId: typeof sessionId === "string" ? sessionId : undefined,
+              accepted: sentAccepted,
+            }),
           });
           const data = await response.json();
           console.log("[smartReply] fetch result:", JSON.stringify(data)?.slice(0, 200));
+          // Hand the sent entries over only once the request landed: a failed
+          // call (network, HTTP error, `ok: false`) keeps them pending so the
+          // learning signal is retried with the next summary. Entries accepted
+          // during the flight are deliberately left pending.
+          if (response.ok && data?.ok && sentAccepted.length > 0) {
+            const remaining = smartReplyAccepted.filter((text) => !sentAccepted.includes(text));
+            smartReplyAccepted.length = 0;
+            smartReplyAccepted.push(...remaining);
+          }
           if (!data?.ok || !Array.isArray(data.suggestions)) return [];
           return data.suggestions.filter((item) => typeof item === "string" && item.trim() !== "");
         } catch (err) {
@@ -2290,10 +2351,13 @@ window.__ModuleLoader__.load({
       /**
        * Fill the active suggestion into the composer. `setDraft` is the public
        * input action (the same one voice-input uses), so this writes one undo
-       * step and never touches the editor's internals.
+       * step and never touches the editor's internals. The accepted text is
+       * remembered for the next suggestion request — that is the only signal
+       * the host's habit learner gets from a Tab press.
        */
       const accept = () => {
         if (!accepting) return false;
+        rememberAcceptedSuggestion(active);
         inputActions.setDraft(active);
         return true;
       };
@@ -4276,6 +4340,15 @@ window.__ModuleLoader__.load({
       const [replyModelOptions, setReplyModelOptions] = useState(null);
       const [replyModelQuery, setReplyModelQuery] = useState("");
       const [replyPickerOpen, setReplyPickerOpen] = useState(false);
+      /**
+       * Host capability fields from suggest-options. `runtime` is a boolean on
+       * a new host (suggestions go through ctx.llm.stream) and undefined on an
+       * older one; `habit` carries the local learning stats. Both are optional
+       * and must never be guessed from an absent field.
+       */
+      const [replyRuntime, setReplyRuntime] = useState(undefined);
+      const [replyHabit, setReplyHabit] = useState(null);
+      const [replyResolvedRoute, setReplyResolvedRoute] = useState("");
 
       // Load suggest options (routes + models) when the smartReply dialog opens,
       // and reload the model list whenever the selected route changes — the
@@ -4285,6 +4358,9 @@ window.__ModuleLoader__.load({
           setReplyOptions(null);
           setReplyModelOptions(null);
           setReplyOptionsLoading(false);
+          setReplyRuntime(undefined);
+          setReplyHabit(null);
+          setReplyResolvedRoute("");
           return undefined;
         }
         let cancelled = false;
@@ -4296,8 +4372,19 @@ window.__ModuleLoader__.load({
             if (cancelled) return;
             setReplyOptions(Array.isArray(result?.routes) ? result.routes : []);
             setReplyModelOptions(Array.isArray(result?.models) ? result.models : []);
+            // An older host omits both: leave them undefined so the picker
+            // keeps its legacy behaviour instead of inventing a capability.
+            setReplyRuntime(typeof result?.runtime === "boolean" ? result.runtime : undefined);
+            setReplyHabit(result?.habit !== null && typeof result?.habit === "object" ? result.habit : null);
+            setReplyResolvedRoute(typeof result?.route === "string" ? result.route : "");
           } catch {
-            if (!cancelled) { setReplyOptions([]); setReplyModelOptions([]); }
+            if (!cancelled) {
+              setReplyOptions([]);
+              setReplyModelOptions([]);
+              setReplyRuntime(undefined);
+              setReplyHabit(null);
+              setReplyResolvedRoute("");
+            }
           } finally {
             if (!cancelled) setReplyOptionsLoading(false);
           }
@@ -4316,9 +4403,12 @@ window.__ModuleLoader__.load({
           suggestModel: typeof value.suggestModel === "string" ? value.suggestModel : "",
           suggestRouteKey: typeof value.suggestRouteKey === "string" ? value.suggestRouteKey : "",
           suggestCount: Number.isInteger(value.suggestCount) ? String(value.suggestCount) : "3",
-          suggestTimeoutSec: Number.isFinite(value.suggestTimeoutSec) ? String(value.suggestTimeoutSec) : "12",
+          suggestTimeoutSec: Number.isFinite(value.suggestTimeoutSec) ? String(value.suggestTimeoutSec) : "30",
+          // On by default: an unset field means "learn", and only an explicit
+          // false turns it off.
+          suggestLearnHabits: value.suggestLearnHabits !== false,
         });
-      }, [value.suggestModel, value.suggestRouteKey, value.suggestCount, value.suggestTimeoutSec, replyDirty]);
+      }, [value.suggestModel, value.suggestRouteKey, value.suggestCount, value.suggestTimeoutSec, value.suggestLearnHabits, replyDirty]);
 
       /** Persist only the smartReply fields the user actually changed. */
       const saveReply = () => {
@@ -4334,7 +4424,10 @@ window.__ModuleLoader__.load({
             // An unparseable number falls back to the live value rather than
             // writing NaN into a settings document.
             suggestCount: Number.isInteger(count) && count > 0 ? Math.min(count, 5) : (value.suggestCount ?? 3),
-            suggestTimeoutSec: Number.isFinite(timeout) && timeout > 0 ? timeout : (value.suggestTimeoutSec ?? 12),
+            suggestTimeoutSec: Number.isFinite(timeout) && timeout > 0 ? timeout : (value.suggestTimeoutSec ?? 30),
+            // An unset draft still means the default (on), matching the host
+            // schema; only an explicit false is ever written.
+            suggestLearnHabits: replyDraft.suggestLearnHabits !== false,
           };
           try {
             const ops = Object.entries(next)
@@ -4356,6 +4449,83 @@ window.__ModuleLoader__.load({
           setReplyDirty(false);
         })();
       };
+
+      /**
+       * Legacy-transport usability: only a reachable OpenAI-completions route
+       * works through the host's raw fetch fallback. A new host (`runtime`
+       * true) or an older one that predates the flag (undefined) treats every
+       * route as usable — guessing "unusable" there would be a misleading
+       * warning on a host that can actually serve the call.
+       */
+      const replyRouteUsable = (route) => replyRuntime !== false
+        ? true
+        : route?.reachable === true && route?.api === "openai-completions";
+
+      /** "<id> — <name>" plus the protocol the route speaks, when the host says. */
+      const replyRouteText = (route) => {
+        const base = route.name && route.name !== route.id ? `${route.id} — ${route.name}` : route.id;
+        const protocol = route.api === "openai-completions"
+          ? "OpenAI"
+          : route.api === "anthropic-messages" ? "Anthropic" : route.api;
+        return protocol ? `${base} · ${protocol}` : base;
+      };
+
+      // The effective route: the explicit pick, else whatever the host resolved
+      // as the default (an empty route key still runs on some route).
+      const replySelectedRoute = (replyOptions ?? []).find(
+        (route) => route.id === (replyDraft.suggestRouteKey || replyResolvedRoute),
+      ) ?? null;
+
+      /**
+       * One labelled on/off switch for a boolean smartReply draft field, using
+       * the same switch visual as the optimization rows above the modal body.
+       */
+      const replySwitchRow = (label, hint, on, onToggle) => jsxs("div", {
+        style: { display: "flex", alignItems: "flex-start", gap: "12px" },
+        children: [
+          jsxs("div", {
+            style: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: "3px" },
+            children: [
+              jsx("span", { style: modelsLabelStyle, children: label }),
+              jsx("span", { style: modelsHintStyle, children: hint }),
+            ],
+          }),
+          jsx("button", {
+            type: "button",
+            role: "switch",
+            "aria-checked": on,
+            "aria-label": label,
+            title: on ? t("toggleOn") : t("toggleOff"),
+            disabled: !writable || saving,
+            onClick: () => { onToggle(!on); },
+            style: {
+              flexShrink: 0, marginTop: "2px",
+              position: "relative", display: "inline-block",
+              width: "40px", height: "22px", borderRadius: "999px",
+              padding: 0, font: "inherit",
+              border: "1px solid " + (on
+                ? "transparent"
+                : "var(--dsw-alias-interactive-border, var(--dsw-alias-border-l2, #333))"),
+              background: on
+                ? "var(--dsw-alias-state-business-primary, #2563eb)"
+                : "rgba(148, 163, 184, 0.35)",
+              transition: "background .18s, border-color .18s",
+              cursor: writable && !saving ? "pointer" : "default",
+              opacity: writable ? 1 : 0.5,
+            },
+            children: jsx("span", {
+              style: {
+                position: "absolute", top: "1px", left: "1px",
+                width: "18px", height: "18px", borderRadius: "50%",
+                background: "#fff",
+                boxShadow: "0 1px 3px rgba(0, 0, 0, 0.45)",
+                transform: on ? "translateX(18px)" : "translateX(0)",
+                transition: "transform .18s",
+              },
+            }),
+          }),
+        ],
+      });
 
       const smartReplyGroup = jsxs("div", {
         style: {
@@ -4383,7 +4553,8 @@ window.__ModuleLoader__.load({
                   jsx("option", { value: "", children: t("smartReplyRouteDefault", { route: value.modelsRouteKey || "opencode-go" }) }),
                   ...(replyOptions ?? []).map((r) => jsx("option", {
                     value: r.id,
-                    children: r.name && r.name !== r.id ? `${r.id} — ${r.name}` : r.id,
+                    disabled: !replyRouteUsable(r),
+                    children: replyRouteText(r),
                   }, r.id)),
                 ],
               }),
@@ -4391,6 +4562,18 @@ window.__ModuleLoader__.load({
                 style: modelsHintStyle,
                 children: t("smartReplyRouteHint", { route: value.modelsRouteKey || "opencode-go" }),
               }),
+              // Runtime transport: every configured route (any protocol) works.
+              ...(replyRuntime === true ? [jsx("span", {
+                style: modelsHintStyle,
+                children: t("smartReplyRuntimeHint"),
+              })] : []),
+              // Legacy host: explain why the current pick could never answer.
+              ...(replyRuntime === false && replySelectedRoute !== null && !replyRouteUsable(replySelectedRoute)
+                ? [jsx("span", {
+                  style: { ...modelsHintStyle, color: "var(--dsw-alias-state-error-primary, #ef4444)" },
+                  children: t("smartReplyRouteWarning"),
+                })]
+                : []),
             ],
           }),
           // Model: reuse the existing searchable picker, single-select semantics.
@@ -4423,6 +4606,22 @@ window.__ModuleLoader__.load({
             value: replyDraft.suggestTimeoutSec ?? "",
             onChange: (event) => { replySet("suggestTimeoutSec", event.target.value); },
           }),
+          // Local habit learning: opt-out toggle plus the host's aggregate stats.
+          replySwitchRow(
+            t("smartReplyLearnLabel"),
+            t("smartReplyLearnHint"),
+            replyDraft.suggestLearnHabits !== false,
+            (next) => { replySet("suggestLearnHabits", next); },
+          ),
+          ...(replyHabit?.enabled === true && Number(replyHabit.turns) > 0
+            ? [jsx("span", {
+              style: modelsHintStyle,
+              children: t("smartReplyHabitStats", {
+                turns: Number(replyHabit.turns),
+                accepted: Number.isFinite(replyHabit.accepted) ? replyHabit.accepted : 0,
+              }),
+            })]
+            : []),
           jsx("button", {
             type: "button",
             onClick: saveReply,

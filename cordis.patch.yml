@@ -21,6 +21,7 @@
           changeReport: true
           opencodeSession: true
           modelCapability: true
+          smartReply: true
         chatWorkspacePath: ''
         chatWorkspaceTitle: '通用对话'
         modelsApiKey: ''
@@ -50,3 +51,10 @@
         modelsVision: []
         modelsTextOnly: []
         modelsTimeoutSec: 10
+        # smartReply calls go through ctx.llm.stream when the configured route
+        # is registered with the runtime, so catalog routes and non-OpenAI
+        # protocols need no endpoint override; a direct OpenAI-compatible
+        # request remains as the fallback for an unregistered primary route.
+        # Local habit learning keeps aggregate style stats plus a few short
+        # examples under <DSH_HOME>/plugins/dsh-plugin-toolkit/.
+        suggestLearnHabits: true

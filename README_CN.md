@@ -42,7 +42,7 @@
 | 5 | [`changeReport`](#changereport) | 回合尾部 codex 风格的改动报告卡片 | 开 | 客户端 |
 | 6 | [`opencodeSession`](#opencodesession) | 为 OpenCode Go/Zen 请求补上稳定的 `x-opencode-session` | 开 | 服务端 |
 | 7 | [`modelCapability`](#modelcapability) | 保持某条 llm-pi-ai 路由的模型清单、容量与图像能力最新 | 开 | 服务端 + 客户端 |
-| 8 | [`smartReply`](#smartreply) | 输入框灰字显示建议回复，Tab 填入 | 开 | 客户端 + 服务端 |
+| 8 | [`smartReply`](#smartreply) | 输入框灰字显示建议回复，Tab 填入；已注册路由按自身协议走运行时调用，并结合上下文与本地表达习惯 | 开 | 客户端 + 服务端 |
 
 ## 安装（web profile）
 
@@ -67,8 +67,9 @@ systemctl restart deepseek-harness.service  # 或你的 profile 重启方式
 |---|---|---|---|
 | 客户端 | `client.js` | 设置卡片、内联编辑 UI、侧栏重排、「/」菜单改写、改动报告卡片、输入框灰字建议回复、模型 id 选择器 | 客户端模块表、会话节点/回合尾部槽位、`conversation.input.overlay`、`inputActions`、`remote.*` 命名空间包装、settings scope |
 | 服务端 | `index.js` | 设置 schema 与默认值、默认对话工作区目录、OpenCode 会话头 | `settings`、`llm/stream`、`globalThis.fetch` |
-| 服务端 | `model-sync.js` + `models-core.js` | 模型发现包装、同步/清单路由、容量与模态补全，以及 smartReply 复用的端点/凭据解析器 | `llm` 模型发现、`webServer` 路由、settings 存储 |
-| 服务端 | `suggest-api.js` + `suggest-core.js` | 建议回复路由，及其背后的纯 prompt 构造 / JSON 抢救逻辑 | `webServer` 路由、`model-sync` 解析器 |
+| 服务端 | `model-sync.js` + `models-core.js` | 模型发现包装、同步/清单路由、容量与模态补全，以及 smartReply 未注册路由兜底时复用的端点/凭据解析器 | `llm` 模型发现、`webServer` 路由、settings 存储 |
+| 服务端 | `suggest-api.js` + `suggest-core.js` | 建议回复路由（运行时优先、直连兜底）、会话上下文读取，及其背后的纯 prompt 构造 / JSON 抢救逻辑 | `webServer` 路由、`llm` 流式调用、`sessions`、`model-sync` 解析器 |
+| 服务端 | `suggest-habits.js` + `suggest-store.js` | 纯本地表达习惯统计，以及它们在 `<DSH_HOME>/plugins/dsh-plugin-toolkit/` 下的原子、容错持久化 | 本地文件系统 |
 
 全包一致的设计原则：
 
@@ -236,10 +237,10 @@ OpenCode Go 现在会 400 拒绝缺少 `x-opencode-session` 的请求（`{"type"
 
 ### `smartReply`
 
-在**输入框里**用灰色幽灵字显示一条「你接下来可能说的话」，按 **Tab** 填入。一轮回答结束后，把最后一条 AI 回复交给一个小模型起草若干条候选，第一条直接显示在输入框内，`↑`/`↓` 切换其余候选，`Esc` 取消，`Tab` 填入当前这条。
+在**输入框里**用灰色幽灵字显示一条「你接下来可能说的话」，按 **Tab** 填入。一轮回答结束后，把最后一条 AI 回复和上一轮用户消息交给一个小模型起草若干条候选，第一条直接显示在输入框内，`↑`/`↓` 切换其余候选，`Esc` 取消，`Tab` 填入当前这条。已注册到 DSH 运行时的路由会按自身协议走运行时调用，未注册的主路由才走直连兜底；同时会从本机历史里学习你的表达习惯。
 
 <p align="center">
-  <img src="docs/assets/flow-smart-reply.svg" alt="已结算的 AI 消息进入总结；建议路由复用模型能力的端点与密钥解析取回候选；灰字按实测对齐叠在输入框上，Tab 通过 setDraft 接受" width="100%">
+  <img src="docs/assets/flow-smart-reply.svg" alt="已结算的 AI 消息进入总结；建议请求带上会话里的真实用户消息与本地表达习惯，已注册路由走 ctx.llm.stream 按适配器协议取回候选；灰字按实测对齐叠在输入框上，Tab 通过 setDraft 接受" width="100%">
 </p>
 
 做法与边界：
@@ -247,20 +248,24 @@ OpenCode Go 现在会 400 拒绝缺少 `x-opencode-session` 的请求（`{"type"
 - **只在真正有用的时刻出现。** 只有输入框为空**且**本轮空闲时才渲染——绝不盖在提交过程中，也绝不盖在你已经打了一半的字上；打一个字符就立刻消失。
 - **对齐是实测的，不是猜的。** 输入框是 Lexical 的 contenteditable，内边距、字号、行高、字距都是 dsh 自己的 CSS。灰字层直接**复制 textarea 的 computed 几何与排版**，并定位到它实测出的盒子上，所以 dsh 改 CSS 也不会错位。灰字显示期间，输入框自带的 placeholder 会按 dsh 处理输入法组合态的同一套机制让位——只加一个标记属性，灰字消失即刻撤销。
 - **接受走公开接口。** `Tab` 通过会话服务的 `inputActions.setDraft`（voice-input 用的同一个动作）写入，只占一个撤销步，不碰编辑器内部。`Tab` 只在输入框聚焦**且**有候选时才会被拦截，页面上其它 `Tab` 语义不变。
+- **调用优先走 DSH 运行时。** 路由已在 llm 运行时注册时，建议调用直接走 `ctx.llm.stream`：端点、协议、凭据都由适配器负责，所以 `minimax-cn` 这类 `anthropic-messages` 目录路由也能直接用，不再需要 `modelsRouteBaseURLs`。只有未注册的主路由（例如插件自己配置的 `opencode-go` 网关）才回退到直连 OpenAI 兼容端点，并保留原来的拒绝阶梯：解析不出端点、拿不到凭据、协议不兼容、没有模型 id —— 一律不给建议，而不是发出一个注定失败的请求。
+- **prompt 带上真实上下文。** 请求携带当前会话 id，host 从会话日志里读最近的真实用户消息（跳过注入内容），与助手回答结尾一起构成 prompt：候选沿着同一话题、同一语气继续，而不是凭空猜一个问题。
+- **本地学习表达习惯（可关）。** 每轮把会话里尚未学过的真实用户消息，以及你用 Tab 接受过的建议，汇总成本地统计：平均长度、常用开头，每种语言最多 5 条真实示例 + 5 条接受过的建议；写入 `<DSH_HOME>/plugins/dsh-plugin-toolkit/suggest-habits.json`。状态文件只留在本机，但其中一小段聚合提示（最多 2 条真实示例 + 2 条接受过的建议）会随建议 prompt 发给你配置的建议模型。设置卡里可随时关闭；prompt 明确把它标为数据，不要当成指令或照抄内容。
 - **每轮一次调用**，按 (会话, 总结) 缓存。失败也缓存成「无建议」，所以端点挂掉时每轮只多一次请求，而不是每敲一个键一次。切换会话或断线重连会清空缓存，上一段对话的总结不可能出现在下一段里。
-- **端点解析复用 modelCapability 自己的解析器。** `resolveRouteEndpoint` / `resolveRouteApiKey` 正是为此从 `model-sync.js` 导出的，所以建议走的就是你 profile 已配置好的那条 provider。调用**宁可放弃也不猜**：解析不出端点、拿不到凭据、路由不是 `openai-completions`、没有模型 id —— 一律不给建议，而不是发出一个注定失败的请求。
 - **对话记录不受影响。** 累积器是一个没有 view target 的纯状态型会话定义，本身不渲染任何东西，原版助手气泡行为完全不变。
 - 与本包其它优化一样非侵入：只用公开插槽与公开输入动作，不改 dsh 源码。
 
 | 配置 | 默认 | 含义 |
 |---|---|---|
 | `optimizations.smartReply` | `true` | 灰字提示与建议调用的总开关。 |
-| `suggestRouteKey` | `""` → `modelsRouteKey` | 建议调用使用的 llm-pi-ai 路由；留空复用「模型能力」的主路由。 |
+| `suggestRouteKey` | `""` → `modelsRouteKey` | 建议调用使用的 llm-pi-ai 路由；留空复用「模型能力」的主路由。注册到 llm 运行时的路由按自身协议调用。 |
 | `suggestModel` | `""` | 起草候选的模型；留空则调用时取该路由目录里的第一个 id。每轮都会调用，建议填便宜、快的小模型。 |
 | `suggestPath` | `/api/toolkit/suggest-reply` | 客户端 POST 的同源路由（只注册一次，改动需重启）。 |
+| `suggestOptionsPath` | `/api/toolkit/suggest-options` | 设置页路由/模型选择器使用的同源 GET 路由（只注册一次，改动需重启）。 |
 | `suggestLanguage` | `""` | 回复语言锁定；留空则每次请求跟随界面语言。 |
 | `suggestCount` | `3` | 每轮保留的候选条数。 |
-| `suggestTimeoutSec` | `12` | 单次请求总超时（秒，覆盖响应头**与**响应体）。 |
+| `suggestTimeoutSec` | `30` | 单次请求总超时（秒，覆盖响应头**与**响应体）。 |
+| `suggestLearnHabits` | `true` | 从本机会话历史学习表达习惯（平均长度、常用开头、≤5 条短语示例），用于让候选更像你自己；关闭后不再学习，已有的文件保留。 |
 
 ## 配置总览
 
@@ -296,9 +301,11 @@ OpenCode Go 现在会 400 拒绝缺少 `x-opencode-session` 的请求（`{"type"
 | `suggestRouteKey` | string | `""` | smartReply —— 留空复用 `modelsRouteKey` |
 | `suggestModel` | string | `""` | smartReply —— 留空则用该路由目录的第一个模型 id |
 | `suggestPath` | string | `/api/toolkit/suggest-reply` | smartReply |
+| `suggestOptionsPath` | string | `/api/toolkit/suggest-options` | smartReply |
 | `suggestLanguage` | string | `""` | smartReply —— `""` 表示跟随界面语言 |
 | `suggestCount` | number | `3` | smartReply |
-| `suggestTimeoutSec` | number | `12` | smartReply |
+| `suggestTimeoutSec` | number | `30` | smartReply |
+| `suggestLearnHabits` | boolean | `true` | smartReply —— 本机表达习惯学习；关闭后不再写 `<DSH_HOME>/plugins/dsh-plugin-toolkit/suggest-habits.json` |
 
 ## 开发
 
@@ -308,7 +315,9 @@ npm run smoke         # index.js + model-sync.js 的服务端冒烟（需要 pee
 npm run smoke:client  # 客户端 bundle 的离线冒烟（不需要宿主）
 ```
 
-`npm test` 与 `npm run smoke:client` 自包含。`npm run smoke` 会 import `index.js`，
+`npm test` 与 `npm run smoke:client` 自包含。（`tests/index.test.js` 动态加载宿主入口：
+解析不到 `@deepseek-ai/schemastery` peer 时，它的 9 个宿主侧用例会标记为 skipped 而不是让
+整个测试失败。）`npm run smoke` 会 import `index.js`，
 而后者 import `@deepseek-ai/schemastery` 这个 peer——它**不是**本包的依赖，
 所以要在能解析它的检出里运行（dsh workspace，或已安装本包的 profile），
 而不是在裸 `npm install` 之后：
@@ -330,7 +339,8 @@ cd /root/deepseek-harness && node /root/dsh-plugin-toolkit/scripts/smoke.mjs
 | `index.js` / `index.d.ts` | 服务端半边：settings 命名空间、对话目录、OpenCode fetch 包装。 |
 | `model-sync.js` | 服务端半边：发现包装、同步/清单路由、补全与迁移；同时导出 smartReply 复用的端点/凭据解析器。 |
 | `models-core.js` | 纯合并/补全/diff 辅助函数（无网络、无 settings 访问）。 |
-| `suggest-api.js` / `suggest-core.js` | 服务端半边：建议回复路由，及其背后的纯 prompt 构造 / JSON 抢救逻辑。 |
+| `suggest-api.js` / `suggest-core.js` | 服务端半边：建议回复路由（运行时优先、直连兜底）、会话上下文读取，以及纯 prompt 构造 / JSON 抢救逻辑。 |
+| `suggest-habits.js` / `suggest-store.js` | 服务端半边：纯本地表达习惯统计（无 I/O），以及 `<DSH_HOME>/plugins/dsh-plugin-toolkit/suggest-habits.json` 的原子读写与容错。 |
 | `client.js` | 浏览器半边：设置卡片与全部客户端优化。 |
 | `cordis.patch.yml` | 注入 dsh bundle patch 的组合默认值。 |
 | `tests/` | 单元测试：纯核心、同步路由、设置卡片，以及 `index.js`（fetch 包装 + `llm/stream` 会话链）。 |

@@ -42,7 +42,7 @@ Everything is wired through public extension surfaces — settings namespaces, t
 | 5 | [`changeReport`](#changereport) | Codex-style per-turn file-change card at the turn tail | on | client |
 | 6 | [`opencodeSession`](#opencodesession) | Stable `x-opencode-session` header on OpenCode Go/Zen requests | on | host |
 | 7 | [`modelCapability`](#modelcapability) | Keeps one llm-pi-ai route's model list, capacities and image support current | on | host + client |
-| 8 | [`smartReply`](#smartreply) | Gray ghost-text suggested reply in the composer, Tab to fill | on | client + host |
+| 8 | [`smartReply`](#smartreply) | Gray ghost-text suggested reply in the composer, Tab to fill; registered routes runtime-transported (any protocol), context-aware, learns your phrasing locally | on | client + host |
 
 ## Install (web profile)
 
@@ -67,8 +67,9 @@ The package is split into a browser half and a host half; both read the same `to
 |---|---|---|---|
 | Client | `client.js` | Settings card, inline edit UI, sidebar re-sort, `/`-menu rewrite, change-report card, composer ghost-text suggestion, model-id pickers | Client module table, conversation node/turn-tail slots, `conversation.input.overlay`, `inputActions`, `remote.*` namespace wraps, settings scope |
 | Host | `index.js` | Settings schema and defaults, default chat workspace directory, OpenCode session-header stamping | `settings`, `llm/stream`, `globalThis.fetch` |
-| Host | `model-sync.js` + `models-core.js` | Model discovery wrap, sync/listing routes, capacity and modality enrichment, and the endpoint/credential resolvers `suggest-api.js` reuses | `llm` model discovery, `webServer` routes, settings stores |
-| Host | `suggest-api.js` + `suggest-core.js` | Suggestion route and the pure prompt/salvage logic behind it | `webServer` routes, `model-sync` resolvers |
+| Host | `model-sync.js` + `models-core.js` | Model discovery wrap, sync/listing routes, capacity and modality enrichment, and the endpoint/credential resolvers `suggest-api.js` reuses for its unregistered-route fallback | `llm` model discovery, `webServer` routes, settings stores |
+| Host | `suggest-api.js` + `suggest-core.js` | Suggestion route (runtime-first, direct fallback), session-context reads, and the pure prompt/salvage logic behind it | `webServer` routes, `llm` streaming, `sessions`, `model-sync` resolvers |
+| Host | `suggest-habits.js` + `suggest-store.js` | Pure local phrasing statistics and their atomic, failure-tolerant persistence under `<DSH_HOME>/plugins/dsh-plugin-toolkit/` | local filesystem |
 
 Design rules that hold across the package:
 
@@ -236,10 +237,10 @@ How it works, and its bounds:
 
 ### `smartReply`
 
-A suggested reply shown as **gray ghost text inside the composer**, accepted with **Tab**. When a turn settles, the last assistant message is handed to a small model that drafts a few things *you* might say next; the first is shown inline, `↑`/`↓` cycle the rest, `Esc` dismisses, and `Tab` fills the active one into the draft.
+A suggested reply shown as **gray ghost text inside the composer**, accepted with **Tab**. When a turn settles, the last assistant message and the previous user message are handed to a small model that drafts a few things *you* might say next; the first is shown inline, `↑`/`↓` cycle the rest, `Esc` dismisses, and `Tab` fills the active one into the draft. A route registered with the DSH llm runtime is called through it with its own protocol; an unregistered primary route uses the direct fallback. The feature also learns your phrasing locally.
 
 <p align="center">
-  <img src="docs/assets/flow-smart-reply.svg" alt="A settled assistant message feeds a suggestion route; the candidates return to the composer as ghost text, and Tab accepts the active one through setDraft" width="100%">
+  <img src="docs/assets/flow-smart-reply.svg" alt="A settled assistant message feeds a summary store; the suggestion request carries recent real user messages and locally learned phrasing, and a registered route is called through ctx.llm.stream with the adapter's protocol; the candidates return to the composer as ghost text, and Tab accepts the active one through setDraft" width="100%">
 </p>
 
 How it works, and its bounds:
@@ -248,19 +249,23 @@ How it works, and its bounds:
 - **Alignment is measured, not guessed.** The composer is a Lexical contenteditable whose padding, font, line-height and letter-spacing are dsh's own CSS. The ghost layer copies the textarea's *computed* geometry and typography and is positioned over its measured box, so it cannot drift when that CSS changes. While a ghost is showing, the composer's own placeholder steps aside the same way dsh hides it for IME composing — one marker attribute, removed again when the ghost goes.
 - **The accept path is the public one.** `Tab` goes through the conversation service's `inputActions.setDraft` (the same action voice-input uses), so it is one undo step and never touches editor internals. `Tab` is captured only while the composer has focus *and* a suggestion is showing, so no other `Tab` on the page changes meaning.
 - **One call per turn, cached by (session, summary).** A failed call resolves to "no suggestion" and is cached too, so a dead endpoint costs one request per turn rather than one per keystroke. A session switch or a reconnect clears the cache, so the previous conversation's summary can never be suggested in the next one.
-- **The route resolves through modelCapability's own resolvers.** `resolveRouteEndpoint` / `resolveRouteApiKey` are exported from `model-sync.js` for exactly this, so suggestions reach the provider your profile is already configured for. The call **declines rather than guessing**: no resolvable endpoint, no credential, a route that does not speak `openai-completions`, or no model all yield no suggestion instead of a bad request.
+- **Registered routes go through the DSH runtime.** When the configured route is registered with the llm service, the call uses `ctx.llm.stream`, so the adapter owns endpoint, protocol, and credential — a catalog route such as `minimax-cn` works with its native `anthropic-messages` protocol and needs no `modelsRouteBaseURLs` entry. Only an unregistered primary route (a plugin-owned gateway such as `opencode-go`) falls back to the direct OpenAI-compatible request, keeping the original decline ladder: no resolvable endpoint, no credential, an incompatible protocol, or no model id all yield no suggestion instead of a bad request.
+- **The prompt carries real context.** The request includes the current session id, so the host reads the most recent real user messages from the session log (injections are skipped) and pairs them with the assistant reply's tail. Candidates continue the same thread in the same register instead of guessing a generic question.
+- **Local phrasing learning (opt-out).** Each turn aggregates the session's not-yet-learned real user messages plus the suggestions you accepted with Tab into local statistics — average length, opening words, and up to five real examples plus five accepted texts per language — persisted under `<DSH_HOME>/plugins/dsh-plugin-toolkit/suggest-habits.json`. The state file stays on this machine, but a short aggregate hint (at most two examples and two accepted texts) is embedded in the suggestion prompt, so it reaches whichever model route you configured for suggestions. The feature can be switched off on the settings card; the prompt marks the hint as data that must not be treated as instructions or copied.
 - **The transcript is untouched.** The accumulator is a state-only conversation definition with no view target, so it renders nothing; the stock assistant bubble behaves exactly as before.
 - Non-invasive like every other optimization here: public slots and public input actions only, no dsh source changes.
 
 | Config | Default | Meaning |
 |---|---|---|
 | `optimizations.smartReply` | `true` | Master switch for the ghost text and the suggestion call. |
-| `suggestRouteKey` | `""` → `modelsRouteKey` | llm-pi-ai route the suggestion call uses. Empty reuses the modelCapability primary route. |
+| `suggestRouteKey` | `""` → `modelsRouteKey` | llm-pi-ai route the suggestion call uses. Empty reuses the modelCapability primary route. A route registered with the llm runtime is called with its own protocol. |
 | `suggestModel` | `""` | Model asked to draft the candidates. Empty resolves at call time to the route's own first catalog id. Suggestions run on every turn — name a cheap, fast model. |
 | `suggestPath` | `/api/toolkit/suggest-reply` | Same-origin route the client POSTs to (registered once; changing it needs a restart). |
+| `suggestOptionsPath` | `/api/toolkit/suggest-options` | Same-origin route listing the routes/models the smartReply pickers offer (GET, registered once). |
 | `suggestLanguage` | `""` | Reply-language pin; empty follows the UI language per request. |
 | `suggestCount` | `3` | Candidate replies kept per turn. |
-| `suggestTimeoutSec` | `12` | Total per-request deadline in seconds, headers **and** body. |
+| `suggestTimeoutSec` | `30` | Total per-request deadline in seconds, headers **and** body. |
+| `suggestLearnHabits` | `true` | Learn phrasing from this machine's sessions (average length, openings, ≤5 short examples) so candidates sound like you. Turning it off stops learning; the existing state file is left alone. |
 
 ## Configuration reference
 
@@ -296,9 +301,11 @@ All fields live in the `toolkit` settings namespace. The composition defaults ar
 | `suggestRouteKey` | string | `""` | smartReply — empty reuses `modelsRouteKey` |
 | `suggestModel` | string | `""` | smartReply — empty uses the route's first catalog id |
 | `suggestPath` | string | `/api/toolkit/suggest-reply` | smartReply |
+| `suggestOptionsPath` | string | `/api/toolkit/suggest-options` | smartReply |
 | `suggestLanguage` | string | `""` | smartReply — `""` follows the UI language |
 | `suggestCount` | number | `3` | smartReply |
-| `suggestTimeoutSec` | number | `12` | smartReply |
+| `suggestTimeoutSec` | number | `30` | smartReply |
+| `suggestLearnHabits` | boolean | `true` | smartReply — local phrasing learning; off stops writes to `<DSH_HOME>/plugins/dsh-plugin-toolkit/suggest-habits.json` |
 
 ## Development
 
@@ -308,7 +315,10 @@ npm run smoke         # host-side smoke for index.js + model-sync.js (needs the 
 npm run smoke:client  # offline smoke for the client bundle (no host required)
 ```
 
-`npm test` and `npm run smoke:client` are self-contained. `npm run smoke` imports
+`npm test` and `npm run smoke:client` are self-contained. (`tests/index.test.js`
+loads the host entry dynamically: where the `@deepseek-ai/schemastery` peer does
+not resolve, its nine host-half cases report as skipped instead of failing the
+suite.) `npm run smoke` imports
 `index.js`, which imports the `@deepseek-ai/schemastery` peer; that is **not** a
 dependency of this package, so run it from a checkout where it resolves (a dsh
 workspace, or a profile with this package installed) rather than from a bare
@@ -333,7 +343,8 @@ cd /root/deepseek-harness && node /root/dsh-plugin-toolkit/scripts/smoke.mjs
 | `index.js` / `index.d.ts` | Host half: settings namespace, chat directory, OpenCode fetch wrap. |
 | `model-sync.js` | Host half: discovery wrap, sync/listing routes, enrichment and migration; also exports the endpoint/credential resolvers smartReply reuses. |
 | `models-core.js` | Pure merge/enrich/diff helpers (no network, no settings access). |
-| `suggest-api.js` / `suggest-core.js` | Host half: the suggestion route, and the pure prompt-building / JSON-salvage logic. |
+| `suggest-api.js` / `suggest-core.js` | Host half: the suggestion route (runtime-first with a direct fallback), session-context reads, and the pure prompt-building / JSON-salvage logic. |
+| `suggest-habits.js` / `suggest-store.js` | Host half: pure local phrasing statistics (no I/O), plus atomic, failure-tolerant reads/writes of `<DSH_HOME>/plugins/dsh-plugin-toolkit/suggest-habits.json`. |
 | `client.js` | Browser half: the settings card and every client-side optimization. |
 | `cordis.patch.yml` | Composition defaults inserted into the dsh bundle patch. |
 | `tests/` | Unit tests: the pure core, the sync route, the settings card, and `index.js` (the fetch wrap + `llm/stream` session chain). |

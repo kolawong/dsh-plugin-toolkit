@@ -36,6 +36,13 @@ export interface ToolkitConfig {
      * overrides to the primary route (default true).
      */
     modelCapability: boolean;
+    /**
+     * Suggested reply as gray ghost text in the composer, filled with Tab.
+     * Routes registered with the DSH llm runtime are called through it with
+     * their own protocol; an unregistered primary route falls back to a direct
+     * OpenAI-compatible request (default true).
+     */
+    smartReply: boolean;
   };
   /**
    * Host-side directory the default chat workspace registers. Empty resolves
@@ -84,6 +91,37 @@ export interface ToolkitConfig {
   modelsTimeoutSec: number;
   /** One-time marker: the former quota-badges model settings were adopted. */
   modelsMigratedFromQuotaBadges: boolean;
+  /**
+   * llm-pi-ai route the suggestion call uses (default ""). Empty reuses
+   * modelsRouteKey. When the route is registered with the llm runtime the call
+   * goes through `ctx.llm.stream`, so catalog routes and non-OpenAI protocols
+   * (e.g. minimax-cn's anthropic-messages) work without an endpoint override.
+   */
+  suggestRouteKey: string;
+  /**
+   * Model asked to draft the candidates (default ""). Empty resolves at call
+   * time to the route's own first known id; a cheap, fast model is the right
+   * choice because the call runs once per settled turn.
+   */
+  suggestModel: string;
+  /** Same-origin route the client POSTs a suggestion request to. */
+  suggestPath: string;
+  /** Same-origin route listing the routes and models the pickers offer (GET). */
+  suggestOptionsPath: string;
+  /** Reply-language pin: "" follows the UI, otherwise "zh" or "en". */
+  suggestLanguage: string;
+  /** Candidate replies kept per turn (default 3, clamped to 1..5). */
+  suggestCount: number;
+  /** Total per-request deadline in seconds for the suggestion call (default 30). */
+  suggestTimeoutSec: number;
+  /**
+   * Learn this user's phrasing locally — aggregate length/opening words, up to
+   * five short real-user examples, and accepted suggestions — under
+   * <DSH_HOME>/plugins/dsh-plugin-toolkit/suggest-habits.json (default true).
+   * The file stays local; a short aggregate hint rides in the suggestion
+   * prompt sent to the configured model.
+   */
+  suggestLearnHabits: boolean;
 }
 
 /** Merged configuration the server reads after settings registration. */
@@ -119,6 +157,48 @@ export interface RouteModelOption {
   maxTokens?: number;
   /** Declared input modalities (`["text"]`, `["text","image"]`). */
   input?: string[];
+}
+
+/** One route the smartReply settings picker offers. */
+export interface SuggestRouteOption {
+  id: string;
+  name: string;
+  /** True for the modelCapability primary route (the "default" entry). */
+  primary: boolean;
+  /** Legacy hosts: a stored endpoint resolves for this route. */
+  reachable: boolean;
+  /**
+   * Wire protocol resolved from the route's own profile / plugin override /
+   * primary-route settings. "" when unresolved (a catalog-only route's protocol
+   * is not read by the host resolver).
+   */
+  api: string;
+  /**
+   * Whether a suggestion call can reach this route on the current host:
+   * always true when the host has the llm runtime, otherwise only for a
+   * reachable OpenAI-compatible route.
+   */
+  available: boolean;
+}
+
+/** Payload of the GET suggest-options route. */
+export interface SuggestOptionsPayload {
+  ok: true;
+  primaryRoute: string;
+  route: string;
+  /** The host can call any registered route through `ctx.llm.stream`. */
+  runtime: boolean;
+  /** Local learning state; `turns`/`accepted` are zero when disabled. */
+  habit: { enabled: boolean; turns: number; accepted: number };
+  routes: SuggestRouteOption[];
+  models: RouteModelOption[];
+}
+
+/** Payload of the POST suggest-reply route. */
+export interface SuggestReplyPayload {
+  ok: boolean;
+  suggestions?: string[];
+  error?: { code: string; message: string };
 }
 
 /** Payload of the GET models route (in-process reads, never a live probe). */

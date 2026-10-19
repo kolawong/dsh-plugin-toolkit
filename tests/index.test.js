@@ -13,10 +13,52 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import * as toolkit from "../index.js";
+/**
+ * Load the host half dynamically so `npm test` stays runnable in a bare repo.
+ *
+ * `index.js` imports the `@deepseek-ai/schemastery` peer, which is not a
+ * dependency of this package. On a machine where that peer does not resolve
+ * (a plain `npm install` rather than a dsh checkout/profile) the host-half
+ * assertions skip with a clear reason instead of failing the whole suite; on a
+ * real host they run exactly as before.
+ */
+let toolkit;
+let indexLoadFailure;
+try {
+  toolkit = await import("../index.js");
+} catch (error) {
+  indexLoadFailure = error;
+}
+
+/**
+ * The one expected environment failure: this package declares
+ * `@deepseek-ai/schemastery` as a peer, so a bare `npm install` cannot resolve
+ * it. Any other import failure (syntax error, missing local module, broken
+ * export) must fail loudly rather than masquerade as nine skips.
+ */
+const peerMissing = indexLoadFailure !== undefined
+  && indexLoadFailure?.code === "ERR_MODULE_NOT_FOUND"
+  && String(indexLoadFailure?.message ?? "").includes("@deepseek-ai/schemastery");
+
+if (indexLoadFailure !== undefined && !peerMissing) {
+  throw indexLoadFailure;
+}
+
+/** Run one host-half test, or one skip when the host peer is unavailable. */
+function hostTest(name, fn) {
+  if (indexLoadFailure === undefined) {
+    test(name, fn);
+    return;
+  }
+  test(name, { skip: "requires the host peer @deepseek-ai/schemastery" }, () => {});
+}
+
 // The plugin owns this helper now (it imports nothing from @deepseek-ai/dsh-settings),
 // so the test takes it from the same place the runtime does.
-import { settingsNamespace } from "../index.js";
+function settingsNamespace(value) {
+  if (toolkit === undefined) throw indexLoadFailure ?? new Error("../index.js is unavailable");
+  return toolkit.settingsNamespace(value);
+}
 
 const realFetch = globalThis.fetch;
 
@@ -77,7 +119,7 @@ function restoreFetch(t) {
   t.after(() => { globalThis.fetch = realFetch; });
 }
 
-test("the package root exports the face index.d.ts declares", () => {
+hostTest("the package root exports the face index.d.ts declares", () => {
   assert.equal(toolkit.name, "toolkit");
   assert.equal(toolkit.NS, "toolkit");
   assert.deepEqual(toolkit.inject, ["settings"]);
@@ -92,13 +134,13 @@ test("the package root exports the face index.d.ts declares", () => {
   assert.equal(settingsNamespace(toolkit.NS), "toolkit");
 });
 
-test("apply degrades instead of throwing when every host seam is missing", () => {
+hostTest("apply degrades instead of throwing when every host seam is missing", () => {
   const ctx = makeCtx();
   assert.doesNotThrow(() => { toolkit.apply(ctx, baseConfig(true)); });
   assert.equal(typeof ctx.listeners.get("llm/stream"), "function", "the llm/stream listener still registers");
 });
 
-test("opencodeSession stamps x-opencode-session on OpenCode endpoints", async (t) => {
+hostTest("opencodeSession stamps x-opencode-session on OpenCode endpoints", async (t) => {
   restoreFetch(t);
   const { calls } = applyWithRecording(true);
   await globalThis.fetch("https://opencode.ai/zen/go/v1/models");
@@ -110,7 +152,7 @@ test("opencodeSession stamps x-opencode-session on OpenCode endpoints", async (t
   );
 });
 
-test("opencodeSession covers subdomains but leaves other hosts byte-identical", async (t) => {
+hostTest("opencodeSession covers subdomains but leaves other hosts byte-identical", async (t) => {
   restoreFetch(t);
   const { calls } = applyWithRecording(true);
   await globalThis.fetch("https://api.opencode.ai/v1/models");
@@ -121,7 +163,7 @@ test("opencodeSession covers subdomains but leaves other hosts byte-identical", 
   assert.equal(calls[2].headers.get("x-opencode-session"), null, "a lookalike host is not matched");
 });
 
-test("the optimization toggle is read per request, not cached", async (t) => {
+hostTest("the optimization toggle is read per request, not cached", async (t) => {
   restoreFetch(t);
   // This mirrors the documented live A/B: toggle off -> upstream rejects the
   // request, toggle on -> it succeeds. Here it is asserted on the header.
@@ -134,14 +176,14 @@ test("the optimization toggle is read per request, not cached", async (t) => {
   assert.ok(calls[1].headers.get("x-opencode-session"), "on: the very next request carries it");
 });
 
-test("a caller-supplied session header is never overwritten", async (t) => {
+hostTest("a caller-supplied session header is never overwritten", async (t) => {
   restoreFetch(t);
   const { calls } = applyWithRecording(true);
   await globalThis.fetch("https://opencode.ai/x", { headers: { "x-opencode-session": "caller-value" } });
   assert.equal(calls[0].headers.get("x-opencode-session"), "caller-value");
 });
 
-test("the session id carried by llm/stream reaches the request header", async (t) => {
+hostTest("the session id carried by llm/stream reaches the request header", async (t) => {
   restoreFetch(t);
   const { ctx, calls } = applyWithRecording(true);
   const listener = ctx.listeners.get("llm/stream");
@@ -158,7 +200,7 @@ test("the session id carried by llm/stream reaches the request header", async (t
   assert.equal(calls[0].headers.get("x-opencode-session"), "conversation-7");
 });
 
-test("the llm/stream listener passes a sessionless stream straight through", () => {
+hostTest("the llm/stream listener passes a sessionless stream straight through", () => {
   const { ctx } = applyWithRecording(true);
   const listener = ctx.listeners.get("llm/stream");
   const sentinel = { marker: "inner-stream" };
@@ -168,7 +210,7 @@ test("the llm/stream listener passes a sessionless stream straight through", () 
   assert.equal(out, sentinel, "no session id means no wrapping, not an empty stream");
 });
 
-test("repeated apply calls never stack fetch wraps", async (t) => {
+hostTest("repeated apply calls never stack fetch wraps", async (t) => {
   restoreFetch(t);
   const calls = [];
   globalThis.fetch = (input, init) => {

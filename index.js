@@ -50,13 +50,16 @@
  *
  *  8. smartReply - a suggested reply shown as gray ghost text inside the
  *     composer, filled with Tab. suggest-api.js mounts POST <suggestPath>,
- *     which resolves its route and credential through model-sync's OWN
- *     resolvers (exported for exactly this) so the call reaches whatever
- *     provider the profile is configured for and never guesses a URL or probes
- *     into a guaranteed 401. suggest-core.js holds the pure prompt-building and
- *     JSON-salvage logic. client.js folds the last settled assistant message and
- *     renders the ghost; accepting a suggestion goes through the conversation
- *     service's own `inputActions.setDraft`.
+ *     which calls a route registered with the llm runtime through
+ *     `ctx.llm.stream` (so any configured protocol works, including pi-ai
+ *     catalog routes such as minimax-cn) and falls back to model-sync's own
+ *     endpoint/credential resolvers only for an unregistered primary route,
+ *     never guessing a URL or probing into a guaranteed 401. The prompt pairs
+ *     the assistant's tail with the session's recent real user messages and a
+ *     local phrasing-habit hint (suggest-habits.js/suggest-store.js, written
+ *     under <DSH_HOME>/plugins/dsh-plugin-toolkit/). client.js folds the last
+ *     settled assistant message and renders the ghost; accepting a suggestion
+ *     goes through the conversation service's own `inputActions.setDraft`.
  *
  * @license MIT
  */
@@ -210,6 +213,16 @@ export const Config = z.object({
   suggestCount: z.number().default(3),
   /** Total per-request deadline in seconds for the suggestion call. */
   suggestTimeoutSec: z.number().default(30),
+  /**
+   * Learn this user's phrasing from local traffic: aggregate message length,
+   * opening words, a few short real-user examples, and the suggestions
+   * accepted with Tab. The state file lives under <DSH_HOME>/plugins/
+   * dsh-plugin-toolkit/ and stays on this machine; a short aggregate hint from
+   * it is part of the suggestion prompt sent to the configured suggestion
+   * model. Switching this off stops both learning and the style hint; the
+   * existing file is left alone.
+   */
+  suggestLearnHabits: z.boolean().default(true),
   /** One-time marker: the former quota-badges model settings were adopted here. */
   modelsMigratedFromQuotaBadges: z.boolean().default(false),
 });

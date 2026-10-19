@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="960" height="420" viewBox="0 0 960 420" role="img" aria-labelledby="t d">
   <title id="t">smartReply — ghost-text suggested reply</title>
-  <desc id="d">A settled assistant message is folded by a state-only conversation definition into a last-summary store. The composer overlay POSTs it to the suggestion route, which resolves a route and credential through the model-capability resolvers, asks the model for candidate replies, and returns them. The overlay renders the first as gray ghost text measured onto the textarea; Tab accepts it through setDraft, arrows cycle candidates.</desc>
+  <desc id="d">A settled assistant message is folded by a state-only conversation definition into a last-summary store. The composer overlay POSTs it, plus the session id and any Tab-accepted suggestions, to the suggestion route. A route registered with the llm runtime is called through ctx.llm.stream, so the adapter owns protocol, endpoint and credential; the prompt also carries the session's recent real user messages and a locally learned phrasing hint. The overlay renders the first candidate as gray ghost text measured onto the textarea; Tab accepts it through setDraft, arrows cycle candidates. Only an unregistered route falls back to a direct OpenAI-compatible request and its decline ladder.</desc>
   <defs>
     <style>
       .bg{fill:#ffffff;} .panel{fill:#f6f8fa;stroke:#d0d7de;} .card{fill:#ffffff;stroke:#d0d7de;}
@@ -21,7 +21,7 @@
 
   <rect class="bg" width="960" height="420"/>
   <text class="t title" x="40" y="38">smartReply — a suggested reply in the composer</text>
-  <text class="muted sub" x="40" y="58">One call per settled turn, cached by (session, summary). Every failure means “no suggestion”, never an error in the composer.</text>
+  <text class="muted sub" x="40" y="58">One call per settled turn, cached by (session, summary); prompt = assistant tail + recent user text + local phrasing habits. Every failure means “no suggestion”, never an error in the composer.</text>
 
   <!-- 1. fold -->
   <rect class="panel" x="40" y="86" width="252" height="104" rx="10"/>
@@ -44,11 +44,11 @@
   <!-- 3. route -->
   <rect class="panel" x="576" y="76" width="344" height="124" rx="10"/>
   <text class="muted lab" x="592" y="98">HOST · POST /api/toolkit/suggest-reply</text>
-  <text class="t name" x="592" y="120">resolveRouteEndpoint / resolveRouteApiKey</text>
-  <text class="faint" x="592" y="137">model-sync's own resolvers — reused, not re-derived</text>
+  <text class="t name" x="592" y="120">ctx.llm.stream (registered route)</text>
+  <text class="faint" x="592" y="137">adapter owns protocol · endpoint · credential</text>
   <rect class="warn" x="592" y="146" width="312" height="50" rx="7"/>
-  <text class="tiny" x="602" y="161">declines rather than guessing:</text>
-  <text class="tiny" x="602" y="175">no endpoint · no credential · non-OpenAI route · no model</text>
+  <text class="tiny" x="602" y="161">legacy fallback (unregistered route) declines:</text>
+  <text class="tiny" x="602" y="175">no endpoint · no credential · incompatible protocol · no model</text>
   <text class="tiny" x="602" y="189">→ no suggestion, never a bad request</text>
 
   <!-- decline branch -->
