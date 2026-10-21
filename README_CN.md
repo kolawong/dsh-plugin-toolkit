@@ -341,10 +341,11 @@ cd /root/deepseek-harness && node /root/dsh-plugin-toolkit/scripts/smoke.mjs
 | `models-core.js` | 纯合并/补全/diff 辅助函数（无网络、无 settings 访问）。 |
 | `suggest-api.js` / `suggest-core.js` | 服务端半边：建议回复路由（运行时优先、直连兜底）、会话上下文读取，以及纯 prompt 构造 / JSON 抢救逻辑。 |
 | `suggest-habits.js` / `suggest-store.js` | 服务端半边：纯本地表达习惯统计（无 I/O），以及 `<DSH_HOME>/plugins/dsh-plugin-toolkit/suggest-habits.json` 的原子读写与容错。 |
+| `http-route.js` / `dsh-home.js` | 共享路由帮助函数（`sendJson` / `methodNotAllowed` / 带上限的 `readJsonBody`）与唯一的 DSH_HOME 解析，从三份近乎相同的拷贝中抽出。 |
 | `client.js` | 浏览器半边：设置卡片与全部客户端优化。 |
 | `cordis.patch.yml` | 注入 dsh bundle patch 的组合默认值。 |
 | `tests/` | 单元测试：纯核心、同步路由、设置卡片，以及 `index.js`（fetch 包装 + `llm/stream` 会话链）。 |
-| `scripts/` | 冒烟、e2e 与验证脚本。`smoke.mjs` / `client-smoke.mjs` 离线；`e2e-verify.mjs`（`TOOLKIT_VERIFY_URL`、`DSH_AUTH_PASS`）与 `verify-opencode-session.mjs` 需要真实宿主。 |
+| `scripts/` | 冒烟、宿主补丁与验证脚本。`smoke.mjs` / `client-smoke.mjs` 离线；`apply-host-patch.mjs` / `e2e-verify-rewrite.mjs`（`host:apply` / `host:verify`）与 `verify-smart-reply-history.mjs` 需要 dsh 检出或真实宿主。 |
 | `docs/assets/` | 本 README 系列使用的 SVG 图。`docs/initiative-*.md` 是内部设计笔记，已刻意排除在 npm 包之外。 |
 
 ## 毕业规则

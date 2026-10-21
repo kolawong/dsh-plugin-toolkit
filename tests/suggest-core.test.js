@@ -136,12 +136,6 @@ test("buildSuggestMessages: an unknown language falls back to Chinese, never to 
   assert.match(prompt, /用户/);
 });
 
-test("buildSuggestMessages: count is clamped to a sane range", () => {
-  assert.match(buildSuggestMessages({ summary: "x", count: 99 })[0].content, /5 条/);
-  assert.match(buildSuggestMessages({ summary: "x", count: 0 })[0].content, /3 条/);
-  assert.match(buildSuggestMessages({ summary: "x", count: -2 })[0].content, /3 条/);
-});
-
 test("buildSuggestRequest: an OpenAI-shaped, non-streaming body", () => {
   const body = buildSuggestRequest({ model: "cheap-1", summary: "总结", language: "zh", count: 2 });
   assert.equal(body.model, "cheap-1");

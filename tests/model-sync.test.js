@@ -458,6 +458,9 @@ test("installDiscoveryEnrichment: a profile-declared route is read from the effe
   // layer), so describe() reports it under `value` while `user` is absent. A
   // route read from `user` alone would look unconfigured, resolve no credential,
   // and silently keep the catalog answer.
+  // This same test covers the object-override protocol branch: the
+  // modelsRouteBaseURLs entry below carries both the Anthropic URL and its
+  // protocol, which is why the probe uses /v1/models with x-api-key.
   resetModelSyncCaches();
   process.env.MINIMAX_CN_API_KEY = "sk-minimax";
   const discoveries = new Map([[LLM_PI_AI_NS, async () => [{ id: "MiniMax-M3" }]]]);
@@ -743,37 +746,6 @@ test("installDiscoveryEnrichment: modelsRouteBaseURLs supplies an endpoint for a
   } finally {
     fetchStub.restore();
     delete process.env.KIMI_CODING_API_KEY;
-  }
-});
-
-test("installDiscoveryEnrichment: an object override carries the route's protocol", async () => {
-  resetModelSyncCaches();
-  process.env.MINIMAX_CN_API_KEY = "sk-minimax";
-  const discoveries = new Map([[LLM_PI_AI_NS, async () => [{ id: "MiniMax-M3" }]]]);
-  const { ctx } = makeEnrichmentCtx(discoveries, {
-    config: {
-      ...BASE_CONFIG,
-      modelsRouteBaseURLs: { "minimax-cn": { baseURL: "https://api.minimaxi.com/anthropic", api: "anthropic-messages" } },
-    },
-    describe: storedRoutes({ "minimax-cn": { apiKeyEnv: "MINIMAX_CN_API_KEY" } }),
-  });
-  const seen = [];
-  const fetchStub = stubFetch((url, init) => {
-    seen.push({ url, init });
-    return listingResponse(["MiniMax-M3", "MiniMax-M4"]);
-  });
-  try {
-    installDiscoveryEnrichment(ctx);
-    const answer = await discoveries.get(LLM_PI_AI_NS)({ provider: "minimax-cn" });
-    assert.deepEqual(answer.map((model) => model.id), ["MiniMax-M3", "MiniMax-M4"]);
-    // The Anthropic listing URL and auth shape come from the override, since
-    // the route's profile states neither.
-    assert.equal(seen[0].url, "https://api.minimaxi.com/anthropic/v1/models?limit=1000");
-    assert.equal(seen[0].init.headers["x-api-key"], "sk-minimax");
-    assert.equal(seen[0].init.headers.Authorization, undefined);
-  } finally {
-    fetchStub.restore();
-    delete process.env.MINIMAX_CN_API_KEY;
   }
 });
 

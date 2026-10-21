@@ -57,16 +57,6 @@ export function extractModelIds(body) {
   return null;
 }
 
-/**
- * The per-model profile fields dsh's llm-pi-ai schema understands. Kept in
- * step with the host's own `modelFields` set by
- * `tests/models-core.test.js` → "cleanEntry preserves every profile field the
- * host schema defines": a field that exists on a stored row but not here is
- * silently deleted the next time the row travels through a sync, which is how
- * hand-tuned `reasoningEfforts` / `compat` were being lost.
- */
-export const MODEL_PROFILE_FIELDS = ["name", "contextWindow", "maxTokens", "input", "reasoningEfforts", "compat"];
-
 /** A plain JSON object (not null, not an array). */
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);

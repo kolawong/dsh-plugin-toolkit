@@ -171,6 +171,9 @@ window.__ModuleLoader__.load({
       toggleOn: "已开启",
       toggleOff: "已关闭",
       saveError: "保存失败",
+      aiError: "AI 处理失败",
+      aiBatchError: "AI 批量处理失败",
+      unsavedChanges: "有未保存的修改",
       optEditTitle: "编辑上一条并重发",
       optEditShort: "改上一条消息，重新发送",
       optEditDesc:
@@ -236,6 +239,8 @@ window.__ModuleLoader__.load({
       smartReplyRouteHint: "留空则复用「模型能力」的主路由 {route}。",
       smartReplyRouteDefault: "默认（{route}）",
       smartReplyLanguageLabel: "回复语言",
+      smartReplyLanguageFollow: "跟随界面语言",
+      smartReplyLanguageHint: "留空则每次请求跟随界面语言。",
       smartReplyTimeoutLabel: "超时（秒）",
       smartReplyLearnLabel: "学习我的表达习惯",
       smartReplyLearnHint:
@@ -264,11 +269,11 @@ window.__ModuleLoader__.load({
       modelsPickRemove: "移除 {id}",
       modelsPickCount: "已选 {count}",
       modelsSave: "保存",
-      slashI18nTitle: "命令与技能翻译管理",
       slashI18nSearchPlaceholder: "搜索命令名或描述关键词…",
       slashI18nFilterAll: "全部",
       slashI18nFilterUntranslated: "仅未翻译",
       slashI18nFilterCommand: "命令",
+      slashI18nFilterHint: "提示",
       slashI18nFilterSkill: "技能",
       slashI18nStats: "共 {total} 项 · {translated} 项已翻译 · {untranslated} 项未翻译",
       slashI18nBatchAi: "一键 AI 翻译",
@@ -277,9 +282,6 @@ window.__ModuleLoader__.load({
       slashI18nBatchAiOptimizeLoading: "AI 归纳中 ({n})…",
       slashI18nSave: "保存翻译",
       slashI18nSavedNotice: "翻译已保存并即时生效",
-      slashI18nColName: "名称 / 类型",
-      slashI18nColOriginal: "英文原描述",
-      slashI18nColTranslation: "中文翻译 (可自由微调)",
       slashI18nPlaceholderTranslation: "请输入中文翻译或点击 AI 操作…",
       slashI18nAiButton: "AI 翻译",
       slashI18nAiOptimize: "翻译并归纳",
@@ -318,6 +320,9 @@ window.__ModuleLoader__.load({
       toggleOn: "On",
       toggleOff: "Off",
       saveError: "Save failed",
+      aiError: "AI processing failed",
+      aiBatchError: "AI batch processing failed",
+      unsavedChanges: "Unsaved changes",
       optEditTitle: "Edit & resend last message",
       optEditShort: "Edit the last message and send again",
       optEditDesc:
@@ -383,6 +388,8 @@ window.__ModuleLoader__.load({
       smartReplyRouteHint: "Empty reuses Model capability's primary route ({route}).",
       smartReplyRouteDefault: "Default ({route})",
       smartReplyLanguageLabel: "Reply language",
+      smartReplyLanguageFollow: "Follow UI language",
+      smartReplyLanguageHint: "Empty follows the UI language per request.",
       smartReplyTimeoutLabel: "Timeout (seconds)",
       smartReplyLearnLabel: "Learn my phrasing",
       smartReplyLearnHint:
@@ -411,7 +418,6 @@ window.__ModuleLoader__.load({
       modelsPickRemove: "Remove {id}",
       modelsPickCount: "{count} selected",
       modelsSave: "Save",
-      slashI18nTitle: "Slash Commands & Skills Translations",
       slashI18nSearchPlaceholder: "Search command or description...",
       slashI18nFilterAll: "All",
       slashI18nFilterUntranslated: "Untranslated",
@@ -424,9 +430,6 @@ window.__ModuleLoader__.load({
       slashI18nBatchAiOptimizeLoading: "Summarizing ({n})...",
       slashI18nSave: "Save Translations",
       slashI18nSavedNotice: "Translations saved and active immediately",
-      slashI18nColName: "Name / Type",
-      slashI18nColOriginal: "Original Description",
-      slashI18nColTranslation: "Chinese Translation (Editable)",
       slashI18nPlaceholderTranslation: "Enter translation or click AI action...",
       slashI18nAiButton: "AI Translate",
       slashI18nAiOptimize: "Summarize",
@@ -1439,8 +1442,7 @@ window.__ModuleLoader__.load({
     function slashI18nActive(scope) {
       const snap = scope?.getSnapshot?.();
       if (snap?.status === "ready" && snap.value?.optimizations?.slashI18n === false) return false;
-      const active = localeFace?.getSnapshot?.()?.active;
-      return active === undefined || String(active).toLowerCase().startsWith("zh");
+      return activeLocaleTag() === "zh";
     }
 
     /**
@@ -2137,8 +2139,7 @@ window.__ModuleLoader__.load({
       const snap = smartReplyRefs.scope?.getSnapshot?.();
       const pinned = snap?.status === "ready" ? snap.value?.suggestLanguage : "";
       if (pinned === "zh" || pinned === "en") return pinned;
-      const active = localeFace?.getSnapshot?.()?.active;
-      return active !== undefined && String(active).toLowerCase().startsWith("zh") ? "zh" : "en";
+      return activeLocaleTag();
     }
 
     /** Suggestions per turn: one in-flight request, the rest coalesced. */
@@ -2219,7 +2220,6 @@ window.__ModuleLoader__.load({
             }),
           });
           const data = await response.json();
-          console.log("[smartReply] fetch result:", JSON.stringify(data)?.slice(0, 200));
           // Hand the sent entries over only once the request landed: a failed
           // call (network, HTTP error, `ok: false`) keeps them pending so the
           // learning signal is retried with the next summary. Entries accepted
@@ -2255,7 +2255,6 @@ window.__ModuleLoader__.load({
       const inputState = typeof useInput === "function" ? useInput((s) => s) : undefined;
       const sessionState = typeof useSession === "function" ? useSession((s) => s) : undefined;
       const summary = useSyncExternalStoreSmartReply();
-      console.log("[smartReply] ghost render:", { summary: summary?.text?.slice(0, 30), enabled: smartReplyEnabled() });
 
       const draft = inputState?.draft ?? "";
       const phase = inputState?.phase ?? "plain";
@@ -2459,9 +2458,7 @@ window.__ModuleLoader__.load({
                 ? jsx("span", {
                   "data-toolkit-smart-reply": "hint",
                   style: { marginLeft: "8px", fontSize: "11px", opacity: 0.8, whiteSpace: "nowrap" },
-                  children: t
-                    ? t("hint", { tab: index + 1, total: items.length })
-                    : `Tab 填入 · ${index + 1}/${items.length}`,
+                  children: t("hint", { tab: index + 1, total: items.length }),
                 })
                 : null,
             ],
@@ -3107,7 +3104,7 @@ window.__ModuleLoader__.load({
      * AI translation via existing system credentials, and live persistence.
      */
     function SlashI18nManager(props) {
-      const { t, writable, onClose } = props;
+      const { t, writable } = props;
       const [search, setSearch] = useState("");
       const [filter, setFilter] = useState("all");
       const [drafts, setDrafts] = useState(() => ({ ...customSlashZh }));
@@ -3201,7 +3198,7 @@ window.__ModuleLoader__.load({
             setDrafts((prev) => ({ ...prev, [desc]: firstVal }));
             setIsDirty(true);
           } else {
-            setError(data.error || "AI 处理失败");
+            setError(data.error || t("aiError"));
           }
         } catch (err) {
           setError(err?.message || String(err));
@@ -3257,7 +3254,7 @@ window.__ModuleLoader__.load({
             });
             setIsDirty(true);
           } else {
-            setError(data.error || "AI 批量处理失败");
+            setError(data.error || t("aiBatchError"));
           }
         } catch (err) {
           setError(err?.message || String(err));
@@ -3296,7 +3293,7 @@ window.__ModuleLoader__.load({
             setSavedTick(true);
             setTimeout(() => setSavedTick(false), 2500);
           } else {
-            setError(data.error || "保存失败");
+            setError(data.error || t("saveError"));
           }
         } catch (err) {
           setError(err?.message || String(err));
@@ -3556,7 +3553,7 @@ window.__ModuleLoader__.load({
                               color: isTypeCommand ? "#93c5fd" : "#d8b4fe",
                               border: isTypeCommand ? "1px solid rgba(96, 165, 250, 0.3)" : "1px solid rgba(192, 132, 252, 0.3)",
                             },
-                            children: isTypeCommand ? (item.type === "hint" ? "提示" : "命令") : "技能",
+                            children: isTypeCommand ? (item.type === "hint" ? t("slashI18nFilterHint") : t("slashI18nFilterCommand")) : t("slashI18nFilterSkill"),
                           }),
                           jsx("span", {
                             style: {
@@ -3773,7 +3770,7 @@ window.__ModuleLoader__.load({
                       borderRadius: "6px",
                       border: "1px solid rgba(251, 191, 36, 0.25)",
                     },
-                    children: "有未保存的修改",
+                    children: t("unsavedChanges"),
                   }) : null,
                 ],
               }),
@@ -4087,6 +4084,47 @@ window.__ModuleLoader__.load({
       /** One optimization's on/off switch (lives inside its settings modal; the
        *  modal header already carries the title + description, so the row shows
        *  only a simple enable label, not a duplicate). */
+      /**
+       * One on/off switch button in dsh's own toggle recipe (TrajectoryToolbar):
+       * track + sliding thumb, filled with the state-business-primary accent
+       * when on, neutral when off. Shared by the optimization rows and the
+       * smartReply fields.
+       */
+      const switchButton = ({ on, disabled, ariaLabel, onToggle }) => jsx("button", {
+        type: "button",
+        role: "switch",
+        "aria-checked": on,
+        "aria-label": ariaLabel,
+        title: on ? t("toggleOn") : t("toggleOff"),
+        disabled,
+        onClick: () => { onToggle(!on); },
+        style: {
+          flexShrink: 0, marginTop: "2px",
+          position: "relative", display: "inline-block",
+          width: "40px", height: "22px", borderRadius: "999px",
+          padding: 0, font: "inherit",
+          border: "1px solid " + (on
+            ? "transparent"
+            : "var(--dsw-alias-interactive-border, var(--dsw-alias-border-l2, #333))"),
+          background: on
+            ? "var(--dsw-alias-state-business-primary, #2563eb)"
+            : "rgba(148, 163, 184, 0.35)",
+          transition: "background .18s, border-color .18s",
+          cursor: !disabled ? "pointer" : "default",
+          opacity: writable ? 1 : 0.5,
+        },
+        children: jsx("span", {
+          style: {
+            position: "absolute", top: "1px", left: "1px",
+            width: "18px", height: "18px", borderRadius: "50%",
+            background: "#fff",
+            boxShadow: "0 1px 3px rgba(0, 0, 0, 0.45)",
+            transform: on ? "translateX(18px)" : "translateX(0)",
+            transition: "transform .18s",
+          },
+        }),
+      });
+
       const switchRow = (opt) => {
         const on = opts[opt.key] === true;
         return jsxs("div", {
@@ -4100,43 +4138,11 @@ window.__ModuleLoader__.load({
               style: { flex: 1, minWidth: 0, fontSize: "13.5px", fontWeight: 500, color: "var(--dsw-alias-label-primary, #f3f4f6)" },
               children: t("optEnableLabel"),
             }),
-            // A proper switch, matching dsh's own toggle recipe (TrajectoryToolbar):
-            // track + sliding thumb, filled with the state-business-primary accent
-            // when on, neutral when off.
-            jsx("button", {
-              type: "button",
-              role: "switch",
-              "aria-checked": on,
-              "aria-label": t(opt.titleKey),
-              title: on ? t("toggleOn") : t("toggleOff"),
+            switchButton({
+              on,
               disabled: !writable || saving,
-              onClick: () => { void toggle(opt.key, !on); },
-              style: {
-                flexShrink: 0, marginTop: "2px",
-                position: "relative", display: "inline-block",
-                width: "40px", height: "22px", borderRadius: "999px",
-                padding: 0, font: "inherit",
-                border: "1px solid " + (on
-                  ? "transparent"
-                  : "var(--dsw-alias-interactive-border, var(--dsw-alias-border-l2, #333))"),
-                background: on
-                  ? "var(--dsw-alias-state-business-primary, #2563eb)"
-                  : "rgba(148, 163, 184, 0.35)",
-
-                transition: "background .18s, border-color .18s",
-                cursor: writable && !saving ? "pointer" : "default",
-                opacity: writable ? 1 : 0.5,
-              },
-              children: jsx("span", {
-                style: {
-                  position: "absolute", top: "1px", left: "1px",
-                  width: "18px", height: "18px", borderRadius: "50%",
-                  background: "#fff",
-                  boxShadow: "0 1px 3px rgba(0, 0, 0, 0.45)",
-                  transform: on ? "translateX(18px)" : "translateX(0)",
-                  transition: "transform .18s",
-                },
-              }),
+              ariaLabel: t(opt.titleKey),
+              onToggle: (next) => { void toggle(opt.key, next); },
             }),
           ],
         }, opt.key);
@@ -4407,8 +4413,9 @@ window.__ModuleLoader__.load({
           // On by default: an unset field means "learn", and only an explicit
           // false turns it off.
           suggestLearnHabits: value.suggestLearnHabits !== false,
+          suggestLanguage: typeof value.suggestLanguage === "string" ? value.suggestLanguage : "",
         });
-      }, [value.suggestModel, value.suggestRouteKey, value.suggestCount, value.suggestTimeoutSec, value.suggestLearnHabits, replyDirty]);
+      }, [value.suggestModel, value.suggestRouteKey, value.suggestCount, value.suggestTimeoutSec, value.suggestLearnHabits, value.suggestLanguage, replyDirty]);
 
       /** Persist only the smartReply fields the user actually changed. */
       const saveReply = () => {
@@ -4428,6 +4435,9 @@ window.__ModuleLoader__.load({
             // An unset draft still means the default (on), matching the host
             // schema; only an explicit false is ever written.
             suggestLearnHabits: replyDraft.suggestLearnHabits !== false,
+            suggestLanguage: replyDraft.suggestLanguage === "zh" || replyDraft.suggestLanguage === "en"
+              ? replyDraft.suggestLanguage
+              : "",
           };
           try {
             const ops = Object.entries(next)
@@ -4490,39 +4500,11 @@ window.__ModuleLoader__.load({
               jsx("span", { style: modelsHintStyle, children: hint }),
             ],
           }),
-          jsx("button", {
-            type: "button",
-            role: "switch",
-            "aria-checked": on,
-            "aria-label": label,
-            title: on ? t("toggleOn") : t("toggleOff"),
+          switchButton({
+            on,
             disabled: !writable || saving,
-            onClick: () => { onToggle(!on); },
-            style: {
-              flexShrink: 0, marginTop: "2px",
-              position: "relative", display: "inline-block",
-              width: "40px", height: "22px", borderRadius: "999px",
-              padding: 0, font: "inherit",
-              border: "1px solid " + (on
-                ? "transparent"
-                : "var(--dsw-alias-interactive-border, var(--dsw-alias-border-l2, #333))"),
-              background: on
-                ? "var(--dsw-alias-state-business-primary, #2563eb)"
-                : "rgba(148, 163, 184, 0.35)",
-              transition: "background .18s, border-color .18s",
-              cursor: writable && !saving ? "pointer" : "default",
-              opacity: writable ? 1 : 0.5,
-            },
-            children: jsx("span", {
-              style: {
-                position: "absolute", top: "1px", left: "1px",
-                width: "18px", height: "18px", borderRadius: "50%",
-                background: "#fff",
-                boxShadow: "0 1px 3px rgba(0, 0, 0, 0.45)",
-                transform: on ? "translateX(18px)" : "translateX(0)",
-                transition: "transform .18s",
-              },
-            }),
+            ariaLabel: label,
+            onToggle,
           }),
         ],
       });
@@ -4605,6 +4587,29 @@ window.__ModuleLoader__.load({
             step: 1,
             value: replyDraft.suggestTimeoutSec ?? "",
             onChange: (event) => { replySet("suggestTimeoutSec", event.target.value); },
+          }),
+          // Reply language pin: "" follows the UI language per request.
+          jsxs("label", {
+            style: { display: "flex", flexDirection: "column", gap: "3px" },
+            children: [
+              jsx("span", { style: modelsLabelStyle, children: t("smartReplyLanguageLabel") }),
+              jsx("select", {
+                disabled: !writable || saving,
+                value: replyDraft.suggestLanguage ?? "",
+                onChange: (event) => { replySet("suggestLanguage", event.target.value); },
+                style: {
+                  ...modelsInputStyle,
+                  opacity: writable && !saving ? 1 : 0.5,
+                  cursor: "pointer",
+                },
+                children: [
+                  jsx("option", { value: "", children: t("smartReplyLanguageFollow") }),
+                  jsx("option", { value: "zh", children: "中文" }),
+                  jsx("option", { value: "en", children: "English" }),
+                ],
+              }),
+              jsx("span", { style: modelsHintStyle, children: t("smartReplyLanguageHint") }),
+            ],
           }),
           // Local habit learning: opt-out toggle plus the host's aggregate stats.
           replySwitchRow(

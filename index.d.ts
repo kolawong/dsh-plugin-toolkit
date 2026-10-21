@@ -138,6 +138,14 @@ export interface ToolkitRuntimeConfig extends ToolkitConfig {}
 export declare const Config: unknown;
 
 /**
+ * Validate a settings namespace name against the Cordis grammar. Exported
+ * because the plugin carries it directly (importing it from
+ * `@deepseek-ai/dsh-settings` made the host build's moving export list a
+ * link-time failure).
+ */
+export declare function settingsNamespace(value: string): string;
+
+/**
  * Cordis plugin activation for the server half: publishes the plugin context,
  * installs the opencodeSession fetch wrap + llm/stream listener, then the
  * modelCapability subsystem, and registers the `toolkit` settings namespace.

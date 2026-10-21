@@ -14,8 +14,11 @@ import { readFileSync, writeFileSync, existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { sendJson, methodNotAllowed, readJsonBody } from "./http-route.js";
+import { resolveDshHome } from "./dsh-home.js";
+
 function getDshHome() {
-  return process.env.DSH_HOME || join(homedir(), ".dsh");
+  return resolveDshHome();
 }
 
 function getTranslationsFilePath() {
@@ -296,31 +299,6 @@ export async function callAiTranslate(items, creds, mode = "translate") {
   throw new Error("AI 翻译请求失败，请检查网络连接或 API Key 状态");
 }
 
-function sendJson(res, body, status = 200) {
-  res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Cache-Control": "no-store",
-  });
-  res.end(JSON.stringify(body));
-}
-
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    let raw = "";
-    req.on("data", (chunk) => {
-      raw += chunk;
-    });
-    req.on("end", () => {
-      try {
-        resolve(raw ? JSON.parse(raw) : {});
-      } catch (err) {
-        reject(new Error("Invalid JSON payload"));
-      }
-    });
-    req.on("error", reject);
-  });
-}
-
 /**
  * Install slash-i18n API routes on hostCtx.
  */
@@ -361,7 +339,7 @@ export function installSlashI18nApi(hostCtx, logger) {
 
             if (req.method === "POST") {
               try {
-                const body = await readBody(req);
+                const body = await readJsonBody(req);
                 const current = loadSavedData();
                 const updatedTranslations = {
                   ...current.translations,
@@ -388,7 +366,7 @@ export function installSlashI18nApi(hostCtx, logger) {
               return;
             }
 
-            sendJson(res, { ok: false, error: "Method Not Allowed" }, 405);
+            sendJson(res, methodNotAllowed("GET, POST"), 405);
           },
         }),
       "toolkit: /api/toolkit/slash-translations route",
@@ -402,11 +380,11 @@ export function installSlashI18nApi(hostCtx, logger) {
           path: "/api/toolkit/translate-slash",
           handler: async (req, res) => {
             if (req.method !== "POST") {
-              sendJson(res, { ok: false, error: "Method Not Allowed" }, 405);
+              sendJson(res, methodNotAllowed("POST"), 405);
               return;
             }
             try {
-              const body = await readBody(req);
+              const body = await readJsonBody(req);
               const items = Array.isArray(body.items) ? body.items : [];
               if (items.length === 0) {
                 sendJson(res, { ok: true, translations: {} });

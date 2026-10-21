@@ -38,9 +38,8 @@ import {
 } from "./suggest-core.js";
 import { resolveRouteEndpoint, resolveRouteApiKey, modelConfig, routeModelOptions } from "./model-sync.js";
 import { createHabitStore } from "./suggest-store.js";
+import { sendJson, methodNotAllowed, readJsonBody } from "./http-route.js";
 
-/** Ceiling on the request body: this route only ever carries one message tail. */
-const MAX_BODY_BYTES = 64 * 1024;
 /** Ceiling on a reply body, matching the guard the listing probe uses. */
 const MAX_REPLY_BYTES = 256 * 1024;
 /** Most accepted suggestions one request may report back to the habit store. */
@@ -100,52 +99,6 @@ export function joinUrl(baseURL, suffix) {
   const base = String(baseURL ?? "").trim().replace(/\/+$/, "");
   const path = String(suffix ?? "").trim().replace(/^\/+/, "");
   return path === "" ? base : base + "/" + path;
-}
-
-function sendJson(res, body, status = 200) {
-  res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Cache-Control": "no-store",
-  });
-  res.end(JSON.stringify(body));
-}
-
-function methodNotAllowed(allowed) {
-  return {
-    ok: false,
-    error: { code: "method-not-allowed", message: "only " + allowed + " is allowed on this route" },
-  };
-}
-
-/**
- * Read a JSON request body under a hard byte cap. A cap matters here because
- * this is a same-origin route the browser posts to on every settled turn: an
- * unbounded read is a free memory knob for any page that can reach it.
- * @param {object} req - the Node request.
- * @returns {Promise<object>} the parsed body, or {} for an empty one.
- */
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    let raw = "";
-    let size = 0;
-    req.on("data", (chunk) => {
-      size += chunk.length;
-      if (size > MAX_BODY_BYTES) {
-        reject(new Error("request body too large"));
-        req.destroy();
-        return;
-      }
-      raw += chunk;
-    });
-    req.on("end", () => {
-      try {
-        resolve(raw ? JSON.parse(raw) : {});
-      } catch {
-        reject(new Error("invalid JSON payload"));
-      }
-    });
-    req.on("error", reject);
-  });
 }
 
 /**
@@ -399,20 +352,15 @@ export async function requestSuggestionsViaRuntime(ctx, config, routeKey, model,
   });
 
   try {
-    let stream;
-    try {
-      stream = ctx.llm.stream({
-        provider: routeKey,
-        model,
-        system: prompt.system,
-        messages: [{ role: "user", content: [{ type: "text", text: prompt.user }] }],
-        temperature: 0.7,
-        maxTokens: MAX_SUGGEST_TOKENS,
-        signal: controller.signal,
-      });
-    } catch (error) {
-      throw error;
-    }
+    let stream = ctx.llm.stream({
+      provider: routeKey,
+      model,
+      system: prompt.system,
+      messages: [{ role: "user", content: [{ type: "text", text: prompt.user }] }],
+      temperature: 0.7,
+      maxTokens: MAX_SUGGEST_TOKENS,
+      signal: controller.signal,
+    });
     // GenerateOptions.stream is an AsyncIterable; a thenable is a contract
     // violation. Observe its rejection so a broken adapter cannot surface as an
     // unhandled rejection after the route already answered.
@@ -711,7 +659,7 @@ export function installSmartReply(hostCtx, configThunk, deps = {}) {
             }
             let body;
             try {
-              body = await readBody(req);
+              body = await readJsonBody(req);
             } catch (error) {
               sendJson(res, { ok: false, error: { code: "bad-request", message: error?.message ?? String(error) } }, 400);
               return;

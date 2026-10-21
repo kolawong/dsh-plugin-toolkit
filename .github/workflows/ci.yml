@@ -27,6 +27,6 @@ jobs:
         run: npm run smoke:client
       - name: Syntax check every runtime entry
         run: |
-          for file in index.js model-sync.js models-core.js client.js; do
+          for file in index.js model-sync.js models-core.js suggest-api.js suggest-core.js suggest-habits.js suggest-store.js slash-i18n-api.js client.js; do
             node --check "$file"
           done

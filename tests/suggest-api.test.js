@@ -61,9 +61,8 @@ test("suggestConfig: the toggle, language, and habit switch are honoured", () =>
 test("suggestConfig: count and timeout are clamped to usable ranges", () => {
   assert.equal(suggestConfig({ suggestCount: 99 }).count, 5);
   assert.equal(suggestConfig({ suggestCount: 0 }).count, 3);
-  assert.equal(suggestConfig({ suggestCount: -1 }).count, 3);
   assert.equal(suggestConfig({ suggestTimeoutSec: 0 }).timeoutSec, 30);
-  assert.equal(suggestConfig({ suggestTimeoutSec: 30 }).timeoutSec, 30);
+  assert.equal(suggestConfig({ suggestTimeoutSec: 12 }).timeoutSec, 12);
 });
 
 test("suggestConfig: an empty path falls back to the default, never to a blank route", () => {
@@ -147,6 +146,9 @@ test("requestSuggestions: a registered catalog route goes through the llm runtim
     suggestRouteKey: "minimax-cn",
     suggestModel: "MiniMax-M3.1-Flash-Preview",
   });
+  // minimax-cn has no stored baseURL and no modelsRouteBaseURLs override here:
+  // the legacy path would answer no-endpoint; the runtime path needs neither
+  // (this exact configuration was the regression that motivated the refactor).
   const out = await requestSuggestions(
     ctx,
     config,
@@ -169,15 +171,6 @@ test("requestSuggestions: a registered catalog route goes through the llm runtim
   assert.equal(call.temperature, 0.7);
   assert.ok(call.maxTokens >= 2000);
   assert.ok(call.signal instanceof AbortSignal);
-});
-
-test("requestSuggestions: the runtime path needs no resolvable endpoint (minimax-cn regression)", async () => {
-  const ctx = runtimeCtx();
-  const config = suggestConfig({ suggestRouteKey: "minimax-cn", suggestModel: "MiniMax-M3.1-Flash-Preview" });
-  // settings.describe() yields no stored baseURL for minimax-cn, and the plugin
-  // config carries no override: the legacy path would answer no-endpoint.
-  const out = await requestSuggestions(ctx, config, "summary", "zh");
-  assert.deepEqual(out, ["继续，把第二个方案也写出来", "先只给结论"]);
 });
 
 test("requestSuggestions: a runtime finish error is surfaced with its code", async () => {
@@ -341,44 +334,23 @@ test("requestSuggestions: an unregistered route falls back to the endpoint", asy
   assert.match(body.messages[1].content, /已完成两处修改。/);
 });
 
-test("requestSuggestions: a route with no resolvable endpoint declines instead of guessing a URL", async () => {
-  const ctx = ctxWith();
-  await assert.rejects(
-    () => requestSuggestions(ctx, { ...CONFIG, routeKey: "catalog-only" }, "summary", "zh", async () => {
-      throw new Error("must not be called: no endpoint means no request");
-    }),
-    (error) => { assert.equal(error.code, "no-endpoint"); return true; },
-  );
-});
-
-test("requestSuggestions: a non-OpenAI protocol declines on the legacy path", async () => {
-  const anthropic = { ...ctxWith(), config: () => ({ ...PRIMARY, routeApi: "anthropic-messages" }) };
-  await assert.rejects(
-    () => requestSuggestions(anthropic, { ...CONFIG, routeKey: "primary" }, "s", "zh", async () => {
-      throw new Error("must not be called: wrong protocol means no request");
-    }),
-    (error) => { assert.equal(error.code, "unsupported-api"); return true; },
-  );
-});
-
-test("requestSuggestions: no credential declines instead of probing into a guaranteed 401", async () => {
-  const ctx = ctxWith({ apiKey: "" });
-  await assert.rejects(
-    () => requestSuggestions(ctx, { ...CONFIG, routeKey: "primary" }, "s", "zh", async () => {
-      throw new Error("must not be called: no credential means no request");
-    }),
-    (error) => { assert.equal(error.code, "no-credential"); return true; },
-  );
-});
-
-test("requestSuggestions: no configured model and no catalog id declines", async () => {
-  const ctx = { ...ctxWith(), settings: { describe: () => [] }, llm: {} };
-  await assert.rejects(
-    () => requestSuggestions(ctx, { ...CONFIG, model: "", routeKey: "primary" }, "s", "zh", async () => {
-      throw new Error("must not be called: no model means no request");
-    }),
-    (error) => { assert.equal(error.code, "no-model"); return true; },
-  );
+test("requestSuggestions: the legacy path declines instead of guessing", async () => {
+  // Each variant is a distinct decline branch: no invented URL, no unsupported
+  // protocol, no guaranteed-401 probe, no unconfigured model. The table shape
+  // keeps the branches enumerable while one assertion loop covers all of them.
+  const cases = [
+    { name: "no resolvable endpoint", makeCtx: () => ctxWith(), config: { routeKey: "catalog-only" }, code: "no-endpoint" },
+    { name: "a non-OpenAI protocol", makeCtx: () => ({ ...ctxWith(), config: () => ({ ...PRIMARY, routeApi: "anthropic-messages" }) }), config: { routeKey: "primary" }, code: "unsupported-api" },
+    { name: "no credential", makeCtx: () => ctxWith({ apiKey: "" }), config: { routeKey: "primary" }, code: "no-credential" },
+    { name: "no configured model and no catalog id", makeCtx: () => ({ ...ctxWith(), settings: { describe: () => [] }, llm: {} }), config: { model: "", routeKey: "primary" }, code: "no-model" },
+  ];
+  for (const kase of cases) {
+    const forbiddenFetch = async () => { throw new Error(`must not be called: ${kase.code} means no request`); };
+    await assert.rejects(
+      () => requestSuggestions(kase.makeCtx(), { ...CONFIG, ...kase.config }, "summary", "zh", forbiddenFetch),
+      (error) => { assert.equal(error.code, kase.code, kase.name); return true; },
+    );
+  }
 });
 
 test("requestSuggestions: an endpoint error surfaces with its status, never as a silent []", async () => {

@@ -59,6 +59,8 @@
     "suggest-core.js",
     "suggest-habits.js",
     "suggest-store.js",
+    "http-route.js",
+    "dsh-home.js",
     "client.js",
     "slash-i18n-api.js",
     "index.d.ts",
@@ -76,7 +78,6 @@
     "smoke:client": "node scripts/client-smoke.mjs",
     "host:apply": "node scripts/apply-host-patch.mjs",
     "host:verify": "node scripts/e2e-verify-rewrite.mjs",
-    "verify:history": "node --import /root/deepseek-harness/node_modules/.pnpm/tsx@4.23.13/node_modules/tsx/dist/loader.mjs scripts/verify-smart-reply-history.mjs",
     "build": "node -c index.js && node -c client.js"
   },
   "peerDependencies": {

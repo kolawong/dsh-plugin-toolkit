@@ -1,5 +1,5 @@
 /**
- * dsh-plugin-toolkit - Server half (v0.1.0)
+ * dsh-plugin-toolkit - Server half
  *
  * Personal quality-of-life toolkit for DeepSeek Harness. Every optimization is
  * small, runtime-toggleable from the Web settings page, and expected to
@@ -67,12 +67,12 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import z from "@deepseek-ai/schemastery";
 import { installModelCapability, rehealModelCapability } from "./model-sync.js";
 import { installSlashI18nApi } from "./slash-i18n-api.js";
 import { installSmartReply } from "./suggest-api.js";
+import { resolveDshHome } from "./dsh-home.js";
 
 /**
  * Re-exported so the `GET /api/toolkit/models` answer is reachable from the
@@ -247,8 +247,7 @@ function currentConfig() {
 function chatPath(config) {
   const explicit = String(config.chatWorkspacePath ?? "").trim();
   if (explicit !== "") return explicit;
-  const home = process.env.DSH_HOME || join(homedir(), ".dsh");
-  return join(home, "chat");
+  return join(resolveDshHome(), "chat");
 }
 
 /**

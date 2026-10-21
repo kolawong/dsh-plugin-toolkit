@@ -38,11 +38,13 @@ import {
 
 import { writeSync } from "node:fs";
 
+import { sendJson, methodNotAllowed } from "./http-route.js";
+
 /** Settings namespace owned by the llm-pi-ai adapter plugin. */
 export const LLM_PI_AI_NS = "llm-pi-ai";
 
 /** The toolkit's own settings namespace (where the adopted settings land). */
-export const TOOLKIT_NS = "toolkit";
+const TOOLKIT_NS = "toolkit";
 
 /** Namespace the model-capability settings lived in before the move. */
 const LEGACY_NS = "quota-badges";
@@ -185,7 +187,7 @@ function resolveApiKey(config) {
 // ── errors ──────────────────────────────────────────────────────────────────
 
 /** One classified model-sync failure; `code` is the machine-readable class. */
-export class ModelSyncError extends Error {
+class ModelSyncError extends Error {
   constructor(code, message) {
     super(message);
     this.name = "ModelSyncError";
@@ -635,7 +637,7 @@ async function pollLlmPiAi(settings, attempts, intervalMs) {
  * sends no api field of its own). Idempotent: skips once the value matches,
  * and waits briefly for the namespace when this plugin starts before it.
  */
-export async function ensureRouteApi(ctx) {
+async function ensureRouteApi(ctx) {
   const { logger } = ctx;
   const config = ctx.config();
   if (!config.enabled) return;
@@ -681,7 +683,7 @@ let modalitiesInflight = null;
  * of settings changes runs one pass.
  * @returns {Promise<void>} completion of the healing pass.
  */
-export function ensureModalities(ctx) {
+function ensureModalities(ctx) {
   if (modalitiesInflight !== null) return modalitiesInflight;
   modalitiesInflight = healModalities(ctx).finally(() => {
     modalitiesInflight = null;
@@ -895,20 +897,6 @@ function routeRegistered(llm, routeKey) {
   }
 }
 
-/**
- * The model ids the settings-card picker may offer for this route: the stored
- * llm-pi-ai rows (which keep hand-tuned capacities) unioned with the runtime's
- * own view, deduped by id and sorted for a stable list. In-process reads only —
- * the GET route never probes the network, so opening the modal stays instant
- * even when the endpoint is down.
- *
- * A failure is reported as a failure. Answering `ok: true` with an empty list
- * for a route that does not exist is the "empty data instead of an error"
- * trap this project already ruled out for the card.
- * @param {object} ctx - the model-capability context.
- * @returns {Promise<object>} `{ ok, routeKey, count, models, forcedVision, forcedTextOnly }`
- *   or `{ ok: false, error: { code, message } }`.
- */
 /**
  * The model ids one route can offer a picker: the stored llm-pi-ai rows (which
  * keep hand-tuned capacities) unioned with the runtime's own view, deduped by
@@ -1548,26 +1536,6 @@ export function installDiscoveryEnrichment(ctx) {
 }
 
 // ── route ───────────────────────────────────────────────────────────────────
-
-function sendJson(res, body, status = 200) {
-  res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Cache-Control": "no-store",
-  });
-  res.end(JSON.stringify(body));
-}
-
-/**
- * The 405 payload. Shaped like every other failure this module returns
- * (`{ ok, error: { code, message } }`) so a scripted caller can parse one
- * error shape instead of two — it used to be a bare string here.
- */
-function methodNotAllowed(allowed) {
-  return {
-    ok: false,
-    error: { code: "method-not-allowed", message: "only " + allowed + " is allowed on this route" },
-  };
-}
 
 /** The latest installed capability context, for settings-change re-healing. */
 let activeContext = null;

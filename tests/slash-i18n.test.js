@@ -33,9 +33,14 @@ test("slash-i18n: loadSavedData and saveTranslationsData round-trip", () => {
   }
 });
 
-test("slash-i18n: resolveCredentials returns an object", () => {
+test("slash-i18n: resolveCredentials returns a key -> key map, never null", () => {
   const creds = resolveCredentials();
-  assert.equal(typeof creds, "object");
+  assert.ok(creds !== null && typeof creds === "object" && !Array.isArray(creds));
+  for (const [key, value] of Object.entries(creds)) {
+    assert.equal(typeof key, "string");
+    assert.equal(typeof value, "string");
+    assert.notEqual(value, "");
+  }
 });
 
 test("slash-i18n: callAiTranslate throws when no credentials provided", async () => {

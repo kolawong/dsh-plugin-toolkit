@@ -30,7 +30,6 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 import {
@@ -41,6 +40,7 @@ import {
   habitStyleHint,
   habitSummary,
 } from "./suggest-habits.js";
+import { resolveDshHome } from "./dsh-home.js";
 
 /** Directory under DSH_HOME that holds this plugin's private state. */
 export const HABIT_PLUGIN_DIR = "dsh-plugin-toolkit";
@@ -55,9 +55,7 @@ export const MAX_HABIT_FILE_BYTES = 64 * 1024;
  * @returns {string} absolute path of the habit state file.
  */
 export function resolveHabitPath(env = process.env) {
-  const configured = typeof env?.DSH_HOME === "string" ? env.DSH_HOME.trim() : "";
-  const home = configured !== "" ? configured : join(homedir(), ".dsh");
-  return join(home, "plugins", HABIT_PLUGIN_DIR, HABIT_FILE);
+  return join(resolveDshHome(env), "plugins", HABIT_PLUGIN_DIR, HABIT_FILE);
 }
 
 /**

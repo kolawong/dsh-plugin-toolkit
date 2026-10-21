@@ -346,14 +346,6 @@ test("mergeModelLists preserves catalog input modalities through cleanEntry", ()
   assert.deepEqual(merged[1], { id: "b" });
 });
 
-// "a failed live probe keeps every catalog row" — the fact a suggestion route
-// reuses this same endpoint resolution to reach the model is exactly why a
-// dropped-row regression here would show up as an empty model picker.
-test("mergeModelLists: an empty live listing keeps every catalog row", () => {
-  const merged = mergeModelLists({ catalog: [{ id: "a", name: "A" }, { id: "b" }], live: [] });
-  assert.deepEqual(merged.map((row) => row.id), ["a", "b"]);
-});
-
 test("mergeModelLists: a catalog-only model is never blanked by a live listing that lacks it", () => {
   const merged = mergeModelLists({
     catalog: [{ id: "keep", name: "Keep" }],

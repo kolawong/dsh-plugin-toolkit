@@ -345,10 +345,11 @@ cd /root/deepseek-harness && node /root/dsh-plugin-toolkit/scripts/smoke.mjs
 | `models-core.js` | Pure merge/enrich/diff helpers (no network, no settings access). |
 | `suggest-api.js` / `suggest-core.js` | Host half: the suggestion route (runtime-first with a direct fallback), session-context reads, and the pure prompt-building / JSON-salvage logic. |
 | `suggest-habits.js` / `suggest-store.js` | Host half: pure local phrasing statistics (no I/O), plus atomic, failure-tolerant reads/writes of `<DSH_HOME>/plugins/dsh-plugin-toolkit/suggest-habits.json`. |
+| `http-route.js` / `dsh-home.js` | Shared route helpers (`sendJson` / `methodNotAllowed` / capped `readJsonBody`) and the single DSH_HOME resolver, extracted from three near-identical copies. |
 | `client.js` | Browser half: the settings card and every client-side optimization. |
 | `cordis.patch.yml` | Composition defaults inserted into the dsh bundle patch. |
 | `tests/` | Unit tests: the pure core, the sync route, the settings card, and `index.js` (the fetch wrap + `llm/stream` session chain). |
-| `scripts/` | Smoke, e2e and verification scripts. `smoke.mjs` / `client-smoke.mjs` are offline; `e2e-verify.mjs` (`TOOLKIT_VERIFY_URL`, `DSH_AUTH_PASS`) and `verify-opencode-session.mjs` need a live host. |
+| `scripts/` | Smoke, host-patch, and verification scripts. `smoke.mjs` / `client-smoke.mjs` are offline; `apply-host-patch.mjs` / `e2e-verify-rewrite.mjs` (`host:apply` / `host:verify`) and `verify-smart-reply-history.mjs` need a dsh checkout or a live host. |
 | `docs/assets/` | The SVG diagrams used by this README family. `docs/initiative-*.md` are internal design notes and are deliberately excluded from the npm package. |
 
 ## Graduation rules
